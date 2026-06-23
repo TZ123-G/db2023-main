@@ -24,6 +24,8 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     std::vector<Condition> fed_conds_;          // join条件
     bool isend;
+    std::vector<std::unique_ptr<RmRecord>> records_;
+    size_t pos_;
 
    public:
     NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right, 
@@ -40,19 +42,57 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         cols_.insert(cols_.end(), right_cols.begin(), right_cols.end());
         isend = false;
         fed_conds_ = std::move(conds);
+        pos_ = 0;
 
     }
 
-    void beginTuple() override {
+    size_t tupleLen() const override { return len_; }
 
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    bool is_end() const override { return isend || pos_ >= records_.size(); }
+
+    void beginTuple() override {
+        records_.clear();
+        pos_ = 0;
+
+        std::vector<std::unique_ptr<RmRecord>> right_records;
+        for (right_->beginTuple(); !right_->is_end(); right_->nextTuple()) {
+            auto rec = right_->Next();
+            if (rec != nullptr) {
+                right_records.push_back(std::move(rec));
+            }
+        }
+
+        for (left_->beginTuple(); !left_->is_end(); left_->nextTuple()) {
+            auto left_rec = left_->Next();
+            if (left_rec == nullptr) {
+                continue;
+            }
+            for (auto it = right_records.rbegin(); it != right_records.rend(); ++it) {
+                auto joined = std::make_unique<RmRecord>(len_);
+                memcpy(joined->data, left_rec->data, left_->tupleLen());
+                memcpy(joined->data + left_->tupleLen(), (*it)->data, right_->tupleLen());
+                if (eval_conds(cols_, joined.get(), fed_conds_)) {
+                    records_.push_back(std::move(joined));
+                }
+            }
+        }
+        isend = records_.empty();
     }
 
     void nextTuple() override {
-        
+        if (!is_end()) {
+            ++pos_;
+        }
+        isend = pos_ >= records_.size();
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        if (is_end()) {
+            return nullptr;
+        }
+        return std::make_unique<RmRecord>(*records_[pos_]);
     }
 
     Rid &rid() override { return _abstract_rid; }

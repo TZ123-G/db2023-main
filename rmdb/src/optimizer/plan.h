@@ -15,7 +15,9 @@ See the Mulan PSL v2 for more details. */
 #include <memory>
 #include <string>
 #include <vector>
+#include "common/common.h"
 #include "parser/ast.h"
+#include "system/sm.h"
 
 #include "parser/parser.h"
 

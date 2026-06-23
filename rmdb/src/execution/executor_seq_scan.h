@@ -45,17 +45,43 @@ class SeqScanExecutor : public AbstractExecutor {
         fed_conds_ = conds_;
     }
 
+    size_t tupleLen() const override { return len_; }
+
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    bool is_end() const override { return scan_ == nullptr || scan_->is_end(); }
+
     void beginTuple() override {
-        
+        scan_ = std::make_unique<RmScan>(fh_);
+        skip_unmatched();
     }
 
     void nextTuple() override {
-        
+        if (is_end()) {
+            return;
+        }
+        scan_->next();
+        skip_unmatched();
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        if (is_end()) {
+            return nullptr;
+        }
+        return fh_->get_record(rid_, context_);
     }
 
     Rid &rid() override { return rid_; }
+
+   private:
+    void skip_unmatched() {
+        while (!scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto rec = fh_->get_record(rid_, context_);
+            if (eval_conds(cols_, rec.get(), fed_conds_)) {
+                return;
+            }
+            scan_->next();
+        }
+    }
 };
