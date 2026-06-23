@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <unordered_map>
 
 #include "transaction.h"
