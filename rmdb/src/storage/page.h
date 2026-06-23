@@ -53,7 +53,7 @@ class Page {
 
    public:
     
-    Page() { reset_memory(); }
+    Page() : id_{-1, INVALID_PAGE_ID} { reset_memory(); }
 
     ~Page() = default;
 

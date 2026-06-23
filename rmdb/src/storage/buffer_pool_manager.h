@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 
 #include <cassert>
 #include <list>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
