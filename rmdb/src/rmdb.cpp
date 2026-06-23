@@ -123,9 +123,8 @@ void *client_handler(void *sock_fd) {
         pthread_mutex_lock(buffer_mutex);
         YY_BUFFER_STATE buf = yy_scan_string(data_recv);
         ast::parse_tree = nullptr;
-        bool parse_success = false;
-        if (yyparse() == 0 && ast::parse_tree != nullptr) {
-            parse_success = true;
+        int parse_rc = yyparse();
+        if (parse_rc == 0 && ast::parse_tree != nullptr) {
             if (ast::parse_tree != nullptr) {
                 try {
                     // analyze and rewrite
@@ -171,7 +170,7 @@ void *client_handler(void *sock_fd) {
                 }
             }
         }
-        if (!parse_success && finish_analyze == false) {
+        if (parse_rc != 0 && finish_analyze == false) {
             std::string str = "failure\n";
             memcpy(data_send, str.c_str(), str.length());
             data_send[str.length()] = '\0';

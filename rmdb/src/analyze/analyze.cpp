@@ -10,6 +10,28 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
+namespace {
+bool is_numeric_type(ColType type) {
+    return type == TYPE_INT || type == TYPE_FLOAT;
+}
+
+void coerce_value_to_col_type(Value &value, ColType target_type) {
+    if (value.type == target_type) {
+        return;
+    }
+    if (!is_numeric_type(value.type) || !is_numeric_type(target_type)) {
+        throw IncompatibleTypeError(coltype2str(target_type), coltype2str(value.type));
+    }
+    if (target_type == TYPE_FLOAT) {
+        int int_val = value.int_val;
+        value.set_float(static_cast<float>(int_val));
+    } else {
+        float float_val = value.float_val;
+        value.set_int(static_cast<int>(float_val));
+    }
+}
+}  // namespace
+
 /**
  * @description: 分析器，进行语义分析和查询重写，需要检查不符合语义规定的部分
  * @param {shared_ptr<ast::TreeNode>} parse parser生成的结果集
@@ -61,9 +83,7 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             set_clause.lhs = {.tab_name = x->tab_name, .col_name = sv_set_clause->col_name};
             auto col = tab.get_col(set_clause.lhs.col_name);
             set_clause.rhs = convert_sv_value(sv_set_clause->val);
-            if (col->type != set_clause.rhs.type) {
-                throw IncompatibleTypeError(coltype2str(col->type), coltype2str(set_clause.rhs.type));
-            }
+            coerce_value_to_col_type(set_clause.rhs, col->type);
             set_clause.rhs.init_raw(col->len);
             query->set_clauses.push_back(std::move(set_clause));
         }
@@ -161,6 +181,7 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
         ColType lhs_type = lhs_col->type;
         ColType rhs_type;
         if (cond.is_rhs_val) {
+            coerce_value_to_col_type(cond.rhs_val, lhs_type);
             cond.rhs_val.init_raw(lhs_col->len);
             rhs_type = cond.rhs_val.type;
         } else {
