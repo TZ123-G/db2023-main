@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "common/datetime.h"
 #include "executor_delete.h"
+#include "executor_aggregate.h"
 #include "executor_index_scan.h"
 #include "executor_insert.h"
 #include "executor_nestedloop_join.h"
@@ -43,7 +44,9 @@ const char *help_info = "Supported SQL syntax:\n"
                    "op:\n"
                    "  {= | <> | < | > | <= | >=}\n"
                    "selector:\n"
-                   "  {* | column [, column ...]}\n";
+                   "  {* | column [, column ...] | aggregate [AS alias] [, aggregate [AS alias] ...]}\n"
+                   "aggregate:\n"
+                   "  {COUNT(*) | COUNT(column) | MAX(column) | MIN(column) | SUM(column)}\n";
 
 // 主要负责执行DDL语句
 void QlManager::run_mutli_query(std::shared_ptr<Plan> plan, Context *context){
@@ -129,16 +132,10 @@ void QlManager::run_cmd_utility(std::shared_ptr<Plan> plan, txn_id_t *txn_id, Co
 }
 
 // 执行select语句，select语句的输出除了需要返回客户端外，还需要写入output.txt文件中
-void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, std::vector<TabCol> sel_cols, 
+void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, std::vector<std::string> captions,
                             Context *context) {
-    std::vector<std::string> captions;
-    captions.reserve(sel_cols.size());
-    for (auto &sel_col : sel_cols) {
-        captions.push_back(sel_col.col_name);
-    }
-
     // Print header into buffer
-    RecordPrinter rec_printer(sel_cols.size());
+    RecordPrinter rec_printer(captions.size());
     rec_printer.print_separator(context);
     rec_printer.print_record(captions, context);
     rec_printer.print_separator(context);
@@ -161,9 +158,13 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
             std::string col_str;
             char *rec_buf = Tuple->data + col.offset;
             if (col.type == TYPE_INT) {
-                col_str = std::to_string(*(int *)rec_buf);
+                int value;
+                memcpy(&value, rec_buf, sizeof(value));
+                col_str = std::to_string(value);
             } else if (col.type == TYPE_FLOAT) {
-                col_str = std::to_string(*(float *)rec_buf);
+                float value;
+                memcpy(&value, rec_buf, sizeof(value));
+                col_str = std::to_string(value);
             } else if (col.type == TYPE_STRING) {
                 col_str = std::string((char *)rec_buf, col.len);
                 col_str.resize(strlen(col_str.c_str()));

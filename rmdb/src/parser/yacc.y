@@ -23,6 +23,7 @@ using namespace ast;
 // keywords
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
 WHERE UPDATE SET SELECT INT CHAR FLOAT DATETIME INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
+COUNT MAX MIN SUM AS
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
@@ -42,14 +43,17 @@ WHERE UPDATE SET SELECT INT CHAR FLOAT DATETIME INDEX AND JOIN EXIT HELP TXN_BEG
 %type <sv_vals> valueList
 %type <sv_str> tbName colName
 %type <sv_strs> tableList colNameList
-%type <sv_col> col
-%type <sv_cols> colList selector
+%type <sv_col> col aggregateArg
+%type <sv_select_item> selectItem aggregate
+%type <sv_select_items> selectItemList selector
+%type <sv_agg_type> aggregateFunc
 %type <sv_set_clause> setClause
 %type <sv_set_clauses> setClauses
 %type <sv_cond> condition
 %type <sv_conds> whereClause optWhereClause
 %type <sv_orderby>  order_clause opt_order_clause
 %type <sv_orderby_dir> opt_asc_desc
+%type <sv_str> optAlias
 
 %%
 start:
@@ -261,17 +265,6 @@ col:
     }
     ;
 
-colList:
-        col
-    {
-        $$ = std::vector<std::shared_ptr<Col>>{$1};
-    }
-    |   colList ',' col
-    {
-        $$.push_back($3);
-    }
-    ;
-
 op:
         '='
     {
@@ -333,7 +326,50 @@ selector:
     {
         $$ = {};
     }
-    |   colList
+    |   selectItemList
+    ;
+
+selectItemList:
+        selectItem
+    {
+        $$ = std::vector<std::shared_ptr<SelectItem>>{$1};
+    }
+    |   selectItemList ',' selectItem
+    {
+        $$.push_back($3);
+    }
+    ;
+
+selectItem:
+        col
+    {
+        $$ = std::make_shared<SelectItem>($1);
+    }
+    |   aggregate
+    ;
+
+aggregate:
+        aggregateFunc '(' aggregateArg ')' optAlias
+    {
+        $$ = std::make_shared<SelectItem>($1, $3, $3 == nullptr, $5);
+    }
+    ;
+
+aggregateArg:
+        col { $$ = $1; }
+    |   '*' { $$ = nullptr; }
+    ;
+
+aggregateFunc:
+        COUNT { $$ = SV_AGG_COUNT; }
+    |   MAX   { $$ = SV_AGG_MAX; }
+    |   MIN   { $$ = SV_AGG_MIN; }
+    |   SUM   { $$ = SV_AGG_SUM; }
+    ;
+
+optAlias:
+        /* epsilon */ { $$ = ""; }
+    |   AS colName   { $$ = $2; }
     ;
 
 tableList:

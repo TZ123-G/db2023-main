@@ -33,6 +33,14 @@ enum OrderByDir {
     OrderBy_DESC
 };
 
+enum SvAggType {
+    SV_AGG_NONE,
+    SV_AGG_COUNT,
+    SV_AGG_MAX,
+    SV_AGG_MIN,
+    SV_AGG_SUM
+};
+
 // Base class for tree nodes
 struct TreeNode {
     virtual ~TreeNode() = default;  // enable polymorphism
@@ -142,6 +150,19 @@ struct Col : public Expr {
             tab_name(std::move(tab_name_)), col_name(std::move(col_name_)) {}
 };
 
+struct SelectItem : public TreeNode {
+    SvAggType agg_type;
+    std::shared_ptr<Col> col;
+    bool is_star;
+    std::string alias;
+
+    SelectItem(std::shared_ptr<Col> col_)
+        : agg_type(SV_AGG_NONE), col(std::move(col_)), is_star(false) {}
+
+    SelectItem(SvAggType agg_type_, std::shared_ptr<Col> col_, bool is_star_, std::string alias_)
+        : agg_type(agg_type_), col(std::move(col_)), is_star(is_star_), alias(std::move(alias_)) {}
+};
+
 struct SetClause : public TreeNode {
     std::string col_name;
     std::shared_ptr<Value> val;
@@ -206,7 +227,7 @@ struct JoinExpr : public TreeNode {
 };
 
 struct SelectStmt : public TreeNode {
-    std::vector<std::shared_ptr<Col>> cols;
+    std::vector<std::shared_ptr<SelectItem>> select_items;
     std::vector<std::string> tabs;
     std::vector<std::shared_ptr<BinaryExpr>> conds;
     std::vector<std::shared_ptr<JoinExpr>> jointree;
@@ -216,11 +237,11 @@ struct SelectStmt : public TreeNode {
     std::shared_ptr<OrderBy> order;
 
 
-    SelectStmt(std::vector<std::shared_ptr<Col>> cols_,
+    SelectStmt(std::vector<std::shared_ptr<SelectItem>> select_items_,
                std::vector<std::string> tabs_,
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
                std::shared_ptr<OrderBy> order_) :
-            cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)), 
+            select_items(std::move(select_items_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
             order(std::move(order_)) {
                 has_sort = (bool)order;
             }
@@ -250,6 +271,10 @@ struct SemValue {
 
     std::shared_ptr<Col> sv_col;
     std::vector<std::shared_ptr<Col>> sv_cols;
+
+    SvAggType sv_agg_type;
+    std::shared_ptr<SelectItem> sv_select_item;
+    std::vector<std::shared_ptr<SelectItem>> sv_select_items;
 
     std::shared_ptr<SetClause> sv_set_clause;
     std::vector<std::shared_ptr<SetClause>> sv_set_clauses;

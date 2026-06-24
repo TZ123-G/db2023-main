@@ -154,6 +154,11 @@ class AmbiguousColumnError : public RMDBError {
     AmbiguousColumnError(const std::string &col_name) : RMDBError("Ambiguous column: " + col_name) {}
 };
 
+class InvalidAggregateError : public RMDBError {
+   public:
+    InvalidAggregateError(const std::string &msg) : RMDBError("Invalid aggregate: " + msg) {}
+};
+
 class PageNotExistError : public RMDBError {
    public:
     PageNotExistError(const std::string &table_name, int page_no)

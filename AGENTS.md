@@ -34,6 +34,7 @@
 - 实现一个功能时，同步考虑它与上下游模块的接口契约，例如页 pin/unpin、dirty 标记、元数据落盘、索引维护、事务日志和异常路径。
 - 对比赛框架中明确留给参赛者实现的 TODO，按当前需求补完必要范围，不擅自扩大到完整工业级数据库设计。
 - `DATETIME` 固定使用 `YYYY-MM-DD HH:MM:SS` 格式和 8 字节 `YYYYMMDDHHMMSS` 整数编码；输入校验、编码与格式化应复用 `common/datetime.h`，不要在各执行器重复实现。
+- 聚合查询当前仅支持无 `GROUP BY` 的纯聚合列表：`COUNT/MAX/MIN/SUM` 可带 `AS` 别名和 `WHERE`，不得与普通投影列或 `ORDER BY` 混用。
 
 ## 实现优先级
 

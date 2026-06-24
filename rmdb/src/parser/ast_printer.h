@@ -110,6 +110,26 @@ private:
             std::cout << "COL\n";
             print_val(x->tab_name, offset);
             print_val(x->col_name, offset);
+        } else if (auto x = std::dynamic_pointer_cast<SelectItem>(node)) {
+            if (x->agg_type == SV_AGG_NONE) {
+                std::cout << "SELECT_ITEM\n";
+                print_node(x->col, offset);
+            } else {
+                std::cout << "AGGREGATE\n";
+                static std::map<SvAggType, std::string> aggregate_names{
+                    {SV_AGG_COUNT, "COUNT"},
+                    {SV_AGG_MAX, "MAX"},
+                    {SV_AGG_MIN, "MIN"},
+                    {SV_AGG_SUM, "SUM"},
+                };
+                print_val(aggregate_names.at(x->agg_type), offset);
+                if (x->is_star) {
+                    print_val("*", offset);
+                } else {
+                    print_node(x->col, offset);
+                }
+                print_val(x->alias, offset);
+            }
         } else if (auto x = std::dynamic_pointer_cast<TypeLen>(node)) {
             std::cout << "TYPE_LEN\n";
             print_val(type2str(x->type), offset);
@@ -147,7 +167,7 @@ private:
             print_node_list(x->conds, offset);
         } else if (auto x = std::dynamic_pointer_cast<SelectStmt>(node)) {
             std::cout << "SELECT\n";
-            print_node_list(x->cols, offset);
+            print_node_list(x->select_items, offset);
             print_val_list(x->tabs, offset);
             print_node_list(x->conds, offset);
         } else if (auto x = std::dynamic_pointer_cast<TxnBegin>(node)) {

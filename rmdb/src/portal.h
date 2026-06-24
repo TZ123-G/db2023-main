@@ -17,6 +17,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_abstract.h"
 #include "execution/executor_nestedloop_join.h"
 #include "execution/executor_projection.h"
+#include "execution/executor_aggregate.h"
 #include "execution/executor_seq_scan.h"
 #include "execution/executor_index_scan.h"
 #include "execution/executor_update.h"
@@ -37,12 +38,12 @@ typedef enum portalTag{
 struct PortalStmt {
     portalTag tag;
     
-    std::vector<TabCol> sel_cols;
+    std::vector<std::string> captions;
     std::unique_ptr<AbstractExecutor> root;
     std::shared_ptr<Plan> plan;
     
-    PortalStmt(portalTag tag_, std::vector<TabCol> sel_cols_, std::unique_ptr<AbstractExecutor> root_, std::shared_ptr<Plan> plan_) :
-            tag(tag_), sel_cols(std::move(sel_cols_)), root(std::move(root_)), plan(std::move(plan_)) {}
+    PortalStmt(portalTag tag_, std::vector<std::string> captions_, std::unique_ptr<AbstractExecutor> root_, std::shared_ptr<Plan> plan_) :
+            tag(tag_), captions(std::move(captions_)), root(std::move(root_)), plan(std::move(plan_)) {}
 };
 
 class Portal
@@ -60,16 +61,27 @@ class Portal
     {
         // 这里可以将select进行拆分，例如：一个select，带有return的select等
         if (auto x = std::dynamic_pointer_cast<OtherPlan>(plan)) {
-            return std::make_shared<PortalStmt>(PORTAL_CMD_UTILITY, std::vector<TabCol>(), std::unique_ptr<AbstractExecutor>(),plan);
+            return std::make_shared<PortalStmt>(PORTAL_CMD_UTILITY, std::vector<std::string>(), std::unique_ptr<AbstractExecutor>(),plan);
         } else if (auto x = std::dynamic_pointer_cast<DDLPlan>(plan)) {
-            return std::make_shared<PortalStmt>(PORTAL_MULTI_QUERY, std::vector<TabCol>(), std::unique_ptr<AbstractExecutor>(),plan);
+            return std::make_shared<PortalStmt>(PORTAL_MULTI_QUERY, std::vector<std::string>(), std::unique_ptr<AbstractExecutor>(),plan);
         } else if (auto x = std::dynamic_pointer_cast<DMLPlan>(plan)) {
             switch(x->tag) {
                 case T_select:
                 {
-                    std::shared_ptr<ProjectionPlan> p = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_);
-                    std::unique_ptr<AbstractExecutor> root= convert_plan_executor(p, context);
-                    return std::make_shared<PortalStmt>(PORTAL_ONE_SELECT, std::move(p->sel_cols_), std::move(root), plan);
+                    std::vector<std::string> captions;
+                    if (auto projection = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_)) {
+                        for (const auto &col : projection->sel_cols_) {
+                            captions.push_back(col.col_name);
+                        }
+                    } else if (auto aggregate = std::dynamic_pointer_cast<AggregatePlan>(x->subplan_)) {
+                        for (const auto &expr : aggregate->aggregates_) {
+                            captions.push_back(expr.output_name);
+                        }
+                    } else {
+                        throw InternalError("Unexpected select plan");
+                    }
+                    std::unique_ptr<AbstractExecutor> root = convert_plan_executor(x->subplan_, context);
+                    return std::make_shared<PortalStmt>(PORTAL_ONE_SELECT, std::move(captions), std::move(root), plan);
                 }
                     
                 case T_Update:
@@ -81,7 +93,7 @@ class Portal
                     }
                     std::unique_ptr<AbstractExecutor> root =std::make_unique<UpdateExecutor>(sm_manager_, 
                                                             x->tab_name_, x->set_clauses_, x->conds_, rids, context);
-                    return std::make_shared<PortalStmt>(PORTAL_DML_WITHOUT_SELECT, std::vector<TabCol>(), std::move(root), plan);
+                    return std::make_shared<PortalStmt>(PORTAL_DML_WITHOUT_SELECT, std::vector<std::string>(), std::move(root), plan);
                 }
                 case T_Delete:
                 {
@@ -94,7 +106,7 @@ class Portal
                     std::unique_ptr<AbstractExecutor> root =
                         std::make_unique<DeleteExecutor>(sm_manager_, x->tab_name_, x->conds_, rids, context);
 
-                    return std::make_shared<PortalStmt>(PORTAL_DML_WITHOUT_SELECT, std::vector<TabCol>(), std::move(root), plan);
+                    return std::make_shared<PortalStmt>(PORTAL_DML_WITHOUT_SELECT, std::vector<std::string>(), std::move(root), plan);
                 }
 
                 case T_Insert:
@@ -102,7 +114,7 @@ class Portal
                     std::unique_ptr<AbstractExecutor> root =
                             std::make_unique<InsertExecutor>(sm_manager_, x->tab_name_, x->values_, context);
             
-                    return std::make_shared<PortalStmt>(PORTAL_DML_WITHOUT_SELECT, std::vector<TabCol>(), std::move(root), plan);
+                    return std::make_shared<PortalStmt>(PORTAL_DML_WITHOUT_SELECT, std::vector<std::string>(), std::move(root), plan);
                 }
 
 
@@ -121,7 +133,7 @@ class Portal
         switch(portal->tag) {
             case PORTAL_ONE_SELECT:
             {
-                ql->select_from(std::move(portal->root), std::move(portal->sel_cols), context);
+                ql->select_from(std::move(portal->root), std::move(portal->captions), context);
                 break;
             }
 
@@ -156,6 +168,9 @@ class Portal
         if(auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)){
             return std::make_unique<ProjectionExecutor>(convert_plan_executor(x->subplan_, context), 
                                                         x->sel_cols_);
+        } else if (auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
+            return std::make_unique<AggregateExecutor>(convert_plan_executor(x->subplan_, context),
+                                                       x->aggregates_);
         } else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
             if(x->tag == T_SeqScan) {
                 return std::make_unique<SeqScanExecutor>(sm_manager_, x->tab_name_, x->conds_, context);

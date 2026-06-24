@@ -31,6 +31,8 @@ int main() {
         "select * from tb where x <> 2 and y >= 3. and z <= '123' and b < tb.a;",
         "select x.a, y.b from x, y where x.a = y.b and c = d;",
         "select x.a, y.b from x join y where x.a = y.b and c = d;",
+        "select count(*) as count_row from tb;",
+        "select sum(a) as sum_a, MAX(b) as max_b, min(c) from tb where a > 0;",
         "exit;",
         "help;",
         "",

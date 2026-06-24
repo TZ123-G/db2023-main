@@ -29,6 +29,20 @@ struct TabCol {
     }
 };
 
+enum AggType {
+    AGG_COUNT,
+    AGG_MAX,
+    AGG_MIN,
+    AGG_SUM
+};
+
+struct AggregateExpr {
+    AggType type;
+    TabCol col;
+    bool is_star;
+    std::string output_name;
+};
+
 struct Value {
     ColType type;  // type of value
     union {

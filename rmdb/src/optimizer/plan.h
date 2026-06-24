@@ -42,7 +42,8 @@ typedef enum PlanTag{
     T_IndexScan,
     T_NestLoop,
     T_Sort,
-    T_Projection
+    T_Projection,
+    T_Aggregate
 } PlanTag;
 
 // 查询执行计划
@@ -115,6 +116,20 @@ class ProjectionPlan : public Plan
         std::shared_ptr<Plan> subplan_;
         std::vector<TabCol> sel_cols_;
         
+};
+
+class AggregatePlan : public Plan
+{
+    public:
+        AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<AggregateExpr> aggregates)
+        {
+            Plan::tag = tag;
+            subplan_ = std::move(subplan);
+            aggregates_ = std::move(aggregates);
+        }
+        ~AggregatePlan(){}
+        std::shared_ptr<Plan> subplan_;
+        std::vector<AggregateExpr> aggregates_;
 };
 
 class SortPlan : public Plan

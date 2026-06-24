@@ -39,6 +39,21 @@ void coerce_value_to_col_type(Value &value, ColType target_type) {
         value.set_int(static_cast<int>(float_val));
     }
 }
+
+std::string aggregate_name(ast::SvAggType type) {
+    switch (type) {
+        case ast::SV_AGG_COUNT:
+            return "COUNT";
+        case ast::SV_AGG_MAX:
+            return "MAX";
+        case ast::SV_AGG_MIN:
+            return "MIN";
+        case ast::SV_AGG_SUM:
+            return "SUM";
+        default:
+            throw InternalError("Unexpected aggregate type");
+    }
+}
 }  // namespace
 
 /**
@@ -52,31 +67,76 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
     if (auto x = std::dynamic_pointer_cast<ast::SelectStmt>(parse))
     {
         // 处理表名
-        query->tables = std::move(x->tabs);
+        query->tables = x->tabs;
         for (auto &tab_name : query->tables) {
             if (!sm_manager_->db_.is_table(tab_name)) {
                 throw TableNotFoundError(tab_name);
             }
         }
 
-        // 处理target list，再target list中添加上表名，例如 a.id
-        for (auto &sv_sel_col : x->cols) {
-            TabCol sel_col = {.tab_name = sv_sel_col->tab_name, .col_name = sv_sel_col->col_name};
-            query->cols.push_back(sel_col);
-        }
-        
         std::vector<ColMeta> all_cols;
         get_all_cols(query->tables, all_cols);
-        if (query->cols.empty()) {
+
+        bool has_aggregate = false;
+        bool has_plain_column = false;
+        for (const auto &item : x->select_items) {
+            has_aggregate = has_aggregate || item->agg_type != ast::SV_AGG_NONE;
+            has_plain_column = has_plain_column || item->agg_type == ast::SV_AGG_NONE;
+        }
+        if (has_aggregate && has_plain_column) {
+            throw InvalidAggregateError("aggregate expressions cannot be mixed with ordinary columns");
+        }
+        if (has_aggregate && x->has_sort) {
+            throw InvalidAggregateError("ORDER BY is not supported for aggregate queries");
+        }
+
+        if (x->select_items.empty()) {
             // select all columns
             for (auto &col : all_cols) {
                 TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
                 query->cols.push_back(sel_col);
             }
+        } else if (has_aggregate) {
+            for (const auto &item : x->select_items) {
+                AggregateExpr aggregate;
+                aggregate.type = convert_sv_agg_type(item->agg_type);
+                aggregate.is_star = item->is_star;
+                if (item->is_star) {
+                    if (aggregate.type != AGG_COUNT) {
+                        throw InvalidAggregateError("only COUNT supports '*'");
+                    }
+                    aggregate.output_name = item->alias.empty() ? "COUNT(*)" : item->alias;
+                } else {
+                    aggregate.col = check_column(
+                        all_cols, {.tab_name = item->col->tab_name, .col_name = item->col->col_name});
+                    const auto col = std::find_if(all_cols.begin(), all_cols.end(), [&](const ColMeta &meta) {
+                        return meta.tab_name == aggregate.col.tab_name && meta.name == aggregate.col.col_name;
+                    });
+                    if (col == all_cols.end()) {
+                        throw ColumnNotFoundError(aggregate.col.tab_name + "." + aggregate.col.col_name);
+                    }
+                    if (aggregate.type == AGG_SUM && !is_numeric_type(col->type)) {
+                        throw InvalidAggregateError("SUM only supports INT and FLOAT columns");
+                    }
+                    if ((aggregate.type == AGG_MAX || aggregate.type == AGG_MIN) &&
+                        col->type == TYPE_DATETIME) {
+                        throw InvalidAggregateError(aggregate_name(item->agg_type) +
+                                                    " does not support DATETIME columns");
+                    }
+                    std::string argument_name = item->col->tab_name.empty()
+                                                    ? item->col->col_name
+                                                    : item->col->tab_name + "." + item->col->col_name;
+                    aggregate.output_name =
+                        item->alias.empty()
+                            ? aggregate_name(item->agg_type) + "(" + argument_name + ")"
+                            : item->alias;
+                }
+                query->aggregates.push_back(std::move(aggregate));
+            }
         } else {
-            // infer table name from column name
-            for (auto &sel_col : query->cols) {
-                sel_col = check_column(all_cols, sel_col);  // 列元数据校验
+            for (const auto &item : x->select_items) {
+                TabCol sel_col = {.tab_name = item->col->tab_name, .col_name = item->col->col_name};
+                query->cols.push_back(check_column(all_cols, sel_col));
             }
         }
         //处理where条件
@@ -231,4 +291,14 @@ CompOp Analyze::convert_sv_comp_op(ast::SvCompOp op) {
         {ast::SV_OP_GT, OP_GT}, {ast::SV_OP_LE, OP_LE}, {ast::SV_OP_GE, OP_GE},
     };
     return m.at(op);
+}
+
+AggType Analyze::convert_sv_agg_type(ast::SvAggType type) {
+    std::map<ast::SvAggType, AggType> m = {
+        {ast::SV_AGG_COUNT, AGG_COUNT},
+        {ast::SV_AGG_MAX, AGG_MAX},
+        {ast::SV_AGG_MIN, AGG_MIN},
+        {ast::SV_AGG_SUM, AGG_SUM},
+    };
+    return m.at(type);
 }
