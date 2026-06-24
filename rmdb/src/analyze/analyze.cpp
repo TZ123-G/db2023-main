@@ -10,11 +10,40 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
+#include <limits>
+
 #include "common/datetime.h"
 
 namespace {
+bool is_integer_type(ColType type) {
+    return type == TYPE_INT || type == TYPE_BIGINT;
+}
+
 bool is_numeric_type(ColType type) {
-    return type == TYPE_INT || type == TYPE_FLOAT;
+    return is_integer_type(type) || type == TYPE_FLOAT;
+}
+
+int64_t parse_integer_literal(const std::string &literal) {
+    try {
+        size_t idx = 0;
+        long long value = std::stoll(literal, &idx, 10);
+        if (idx != literal.size()) {
+            throw NumericOverflowError(literal, "BIGINT");
+        }
+        return static_cast<int64_t>(value);
+    } catch (const std::invalid_argument &) {
+        throw NumericOverflowError(literal, "BIGINT");
+    } catch (const std::out_of_range &) {
+        throw NumericOverflowError(literal, "BIGINT");
+    }
+}
+
+template <typename T, typename U>
+void ensure_numeric_range(U value, const std::string &literal, ColType target_type) {
+    if (value < static_cast<U>(std::numeric_limits<T>::lowest()) ||
+        value > static_cast<U>(std::numeric_limits<T>::max())) {
+        throw NumericOverflowError(literal, coltype2str(target_type));
+    }
 }
 
 void coerce_value_to_col_type(Value &value, ColType target_type) {
@@ -32,11 +61,31 @@ void coerce_value_to_col_type(Value &value, ColType target_type) {
         throw IncompatibleTypeError(coltype2str(target_type), coltype2str(value.type));
     }
     if (target_type == TYPE_FLOAT) {
-        int int_val = value.int_val;
-        value.set_float(static_cast<float>(int_val));
-    } else {
-        float float_val = value.float_val;
-        value.set_int(static_cast<int>(float_val));
+        if (value.type == TYPE_INT) {
+            value.set_float(static_cast<float>(value.int_val));
+        } else if (value.type == TYPE_BIGINT) {
+            value.set_float(static_cast<float>(value.bigint_val));
+        }
+        return;
+    }
+    if (target_type == TYPE_BIGINT) {
+        if (value.type == TYPE_INT) {
+            value.set_bigint(static_cast<int64_t>(value.int_val));
+        } else {
+            ensure_numeric_range<int64_t>(value.float_val, std::to_string(value.float_val), target_type);
+            value.set_bigint(static_cast<int64_t>(value.float_val));
+        }
+        return;
+    }
+    if (target_type == TYPE_INT) {
+        if (value.type == TYPE_BIGINT) {
+            ensure_numeric_range<int>(value.bigint_val, std::to_string(value.bigint_val), target_type);
+            value.set_int(static_cast<int>(value.bigint_val));
+        } else {
+            ensure_numeric_range<int>(value.float_val, std::to_string(value.float_val), target_type);
+            value.set_int(static_cast<int>(value.float_val));
+        }
+        return;
     }
 }
 
@@ -56,17 +105,9 @@ std::string aggregate_name(ast::SvAggType type) {
 }
 }  // namespace
 
-/**
- * @description: 分析器，进行语义分析和查询重写，需要检查不符合语义规定的部分
- * @param {shared_ptr<ast::TreeNode>} parse parser生成的结果集
- * @return {shared_ptr<Query>} Query 
- */
-std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
-{
+std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse) {
     std::shared_ptr<Query> query = std::make_shared<Query>();
-    if (auto x = std::dynamic_pointer_cast<ast::SelectStmt>(parse))
-    {
-        // 处理表名
+    if (auto x = std::dynamic_pointer_cast<ast::SelectStmt>(parse)) {
         query->tables = x->tabs;
         for (auto &tab_name : query->tables) {
             if (!sm_manager_->db_.is_table(tab_name)) {
@@ -91,10 +132,8 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         }
 
         if (x->select_items.empty()) {
-            // select all columns
             for (auto &col : all_cols) {
-                TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
-                query->cols.push_back(sel_col);
+                query->cols.push_back({.tab_name = col.tab_name, .col_name = col.name});
             }
         } else if (has_aggregate) {
             for (const auto &item : x->select_items) {
@@ -116,7 +155,7 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
                         throw ColumnNotFoundError(aggregate.col.tab_name + "." + aggregate.col.col_name);
                     }
                     if (aggregate.type == AGG_SUM && !is_numeric_type(col->type)) {
-                        throw InvalidAggregateError("SUM only supports INT and FLOAT columns");
+                        throw InvalidAggregateError("SUM only supports INT, BIGINT and FLOAT columns");
                     }
                     if ((aggregate.type == AGG_MAX || aggregate.type == AGG_MIN) &&
                         col->type == TYPE_DATETIME) {
@@ -135,13 +174,20 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
             }
         } else {
             for (const auto &item : x->select_items) {
-                TabCol sel_col = {.tab_name = item->col->tab_name, .col_name = item->col->col_name};
-                query->cols.push_back(check_column(all_cols, sel_col));
+                query->cols.push_back(
+                    check_column(all_cols, {.tab_name = item->col->tab_name, .col_name = item->col->col_name}));
             }
         }
-        //处理where条件
+
         get_clause(x->conds, query->conds);
         check_clause(query->tables, query->conds);
+        for (const auto &order : x->orders) {
+            query->order_bys.push_back(
+                {.col = check_column(all_cols, {.tab_name = order->col->tab_name, .col_name = order->col->col_name}),
+                 .is_desc = order->orderby_dir == ast::OrderBy_DESC});
+        }
+        query->has_limit = x->has_limit;
+        query->limit = x->limit;
     } else if (auto x = std::dynamic_pointer_cast<ast::UpdateStmt>(parse)) {
         if (!sm_manager_->db_.is_table(x->tab_name)) {
             throw TableNotFoundError(x->tab_name);
@@ -158,14 +204,12 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         }
         get_clause(x->conds, query->conds);
         check_clause({x->tab_name}, query->conds);
-
     } else if (auto x = std::dynamic_pointer_cast<ast::DeleteStmt>(parse)) {
         if (!sm_manager_->db_.is_table(x->tab_name)) {
             throw TableNotFoundError(x->tab_name);
         }
-        //处理where条件
         get_clause(x->conds, query->conds);
-        check_clause({x->tab_name}, query->conds);        
+        check_clause({x->tab_name}, query->conds);
     } else if (auto x = std::dynamic_pointer_cast<ast::InsertStmt>(parse)) {
         if (!sm_manager_->db_.is_table(x->tab_name)) {
             throw TableNotFoundError(x->tab_name);
@@ -174,23 +218,18 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         if (x->vals.size() != tab.cols.size()) {
             throw InvalidValueCountError();
         }
-        // 处理insert 的values值
         for (size_t i = 0; i < x->vals.size(); ++i) {
             Value value = convert_sv_value(x->vals[i]);
             coerce_value_to_col_type(value, tab.cols[i].type);
             query->values.push_back(std::move(value));
         }
-    } else {
-        // do nothing
     }
     query->parse = std::move(parse);
     return query;
 }
 
-
 TabCol Analyze::check_column(const std::vector<ColMeta> &all_cols, TabCol target) {
     if (target.tab_name.empty()) {
-        // Table name not specified, infer table name from column name
         std::string tab_name;
         for (auto &col : all_cols) {
             if (col.name == target.col_name) {
@@ -217,7 +256,6 @@ TabCol Analyze::check_column(const std::vector<ColMeta> &all_cols, TabCol target
 
 void Analyze::get_all_cols(const std::vector<std::string> &tab_names, std::vector<ColMeta> &all_cols) {
     for (auto &sel_tab_name : tab_names) {
-        // 这里db_不能写成get_db(), 注意要传指针
         const auto &sel_tab_cols = sm_manager_->db_.get_table(sel_tab_name).cols;
         all_cols.insert(all_cols.end(), sel_tab_cols.begin(), sel_tab_cols.end());
     }
@@ -241,12 +279,9 @@ void Analyze::get_clause(const std::vector<std::shared_ptr<ast::BinaryExpr>> &sv
 }
 
 void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vector<Condition> &conds) {
-    // auto all_cols = get_all_cols(tab_names);
     std::vector<ColMeta> all_cols;
     get_all_cols(tab_names, all_cols);
-    // Get raw values in where clause
     for (auto &cond : conds) {
-        // Infer table name from column name
         cond.lhs_col = check_column(all_cols, cond.lhs_col);
         if (!cond.is_rhs_val) {
             cond.rhs_col = check_column(all_cols, cond.rhs_col);
@@ -270,11 +305,15 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
     }
 }
 
-
 Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
-        val.set_int(int_lit->val);
+        int64_t literal = parse_integer_literal(int_lit->val);
+        if (literal >= std::numeric_limits<int>::lowest() && literal <= std::numeric_limits<int>::max()) {
+            val.set_int(static_cast<int>(literal));
+        } else {
+            val.set_bigint(literal);
+        }
     } else if (auto float_lit = std::dynamic_pointer_cast<ast::FloatLit>(sv_val)) {
         val.set_float(float_lit->val);
     } else if (auto str_lit = std::dynamic_pointer_cast<ast::StringLit>(sv_val)) {

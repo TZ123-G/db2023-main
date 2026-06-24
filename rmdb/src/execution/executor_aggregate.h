@@ -45,6 +45,11 @@ class AggregateExecutor : public AbstractExecutor {
             int rhs_value = read_value<int>(rhs);
             return (lhs_value > rhs_value) - (lhs_value < rhs_value);
         }
+        if (type == TYPE_BIGINT) {
+            int64_t lhs_value = read_value<int64_t>(lhs);
+            int64_t rhs_value = read_value<int64_t>(rhs);
+            return (lhs_value > rhs_value) - (lhs_value < rhs_value);
+        }
         if (type == TYPE_FLOAT) {
             float lhs_value = read_value<float>(lhs);
             float rhs_value = read_value<float>(rhs);
@@ -110,6 +115,9 @@ class AggregateExecutor : public AbstractExecutor {
                     if (source_col.type == TYPE_INT) {
                         write_value<int>(destination,
                                          read_value<int>(destination) + read_value<int>(source));
+                    } else if (source_col.type == TYPE_BIGINT) {
+                        write_value<int64_t>(destination,
+                                             read_value<int64_t>(destination) + read_value<int64_t>(source));
                     } else {
                         write_value<float>(destination,
                                            read_value<float>(destination) + read_value<float>(source));

@@ -9,6 +9,12 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+
+#include <algorithm>
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -17,33 +23,90 @@ See the Mulan PSL v2 for more details. */
 
 class SortExecutor : public AbstractExecutor {
    private:
+    struct MaterializedTuple {
+        RmRecord record;
+        Rid rid;
+
+        MaterializedTuple(RmRecord record_, Rid rid_) : record(std::move(record_)), rid(rid_) {}
+    };
+
     std::unique_ptr<AbstractExecutor> prev_;
-    ColMeta cols_;                              // 框架中只支持一个键排序，需要自行修改数据结构支持多个键排序
-    size_t tuple_num;
-    bool is_desc_;
-    std::vector<size_t> used_tuple;
-    std::unique_ptr<RmRecord> current_tuple;
+    std::vector<ColMeta> cols_;
+    size_t len_;
+    std::vector<OrderByClause> order_bys_;
+    std::vector<ColMeta> sort_cols_;
+    bool has_limit_;
+    size_t limit_;
+    std::vector<MaterializedTuple> tuples_;
+    size_t cursor_ = 0;
+    Rid current_rid_{};
 
    public:
-    SortExecutor(std::unique_ptr<AbstractExecutor> prev, TabCol sel_cols, bool is_desc) {
-        prev_ = std::move(prev);
-        cols_ = prev_->get_col_offset(sel_cols);
-        is_desc_ = is_desc;
-        tuple_num = 0;
-        used_tuple.clear();
+    SortExecutor(std::unique_ptr<AbstractExecutor> prev, std::vector<OrderByClause> order_bys, bool has_limit,
+                 size_t limit)
+        : prev_(std::move(prev)),
+          cols_(prev_->cols()),
+          len_(prev_->tupleLen()),
+          order_bys_(std::move(order_bys)),
+          has_limit_(has_limit),
+          limit_(limit) {
+        for (const auto &order_by : order_bys_) {
+            sort_cols_.push_back(prev_->get_col_offset(order_by.col));
+        }
     }
 
-    void beginTuple() override { 
-        
+    size_t tupleLen() const override { return len_; }
+
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    void beginTuple() override {
+        tuples_.clear();
+        cursor_ = 0;
+        for (prev_->beginTuple(); !prev_->is_end(); prev_->nextTuple()) {
+            auto record = prev_->Next();
+            if (record != nullptr) {
+                tuples_.emplace_back(std::move(*record), prev_->rid());
+            }
+        }
+        if (!order_bys_.empty()) {
+            std::stable_sort(tuples_.begin(), tuples_.end(), [&](const MaterializedTuple &lhs, const MaterializedTuple &rhs) {
+                for (size_t i = 0; i < sort_cols_.size(); ++i) {
+                    const auto &col = sort_cols_[i];
+                    int cmp = compare(col.type, col.len, lhs.record.data + col.offset, rhs.record.data + col.offset);
+                    if (cmp == 0) {
+                        continue;
+                    }
+                    return order_bys_[i].is_desc ? cmp > 0 : cmp < 0;
+                }
+                return false;
+            });
+        }
+        if (has_limit_ && tuples_.size() > limit_) {
+            tuples_.resize(limit_);
+        }
+        if (!tuples_.empty()) {
+            current_rid_ = tuples_[0].rid;
+        }
     }
 
     void nextTuple() override {
-        
+        if (is_end()) {
+            return;
+        }
+        ++cursor_;
+        if (!is_end()) {
+            current_rid_ = tuples_[cursor_].rid;
+        }
     }
+
+    bool is_end() const override { return cursor_ >= tuples_.size(); }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        if (is_end()) {
+            return nullptr;
+        }
+        return std::make_unique<RmRecord>(tuples_[cursor_].record);
     }
 
-    Rid &rid() override { return _abstract_rid; }
+    Rid &rid() override { return current_rid_; }
 };

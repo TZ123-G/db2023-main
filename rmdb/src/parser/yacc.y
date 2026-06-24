@@ -1,7 +1,9 @@
 %{
 #include "ast.h"
+#include "errors.h"
 #include "yacc.tab.h"
 #include <iostream>
+#include <limits>
 #include <memory>
 
 int yylex(YYSTYPE *yylval, YYLTYPE *yylloc);
@@ -11,6 +13,36 @@ void yyerror(YYLTYPE *locp, const char* s) {
 }
 
 using namespace ast;
+
+int parse_positive_int_literal(const std::string &literal, const std::string &context_name) {
+    try {
+        size_t idx = 0;
+        long long value = std::stoll(literal, &idx, 10);
+        if (idx != literal.size() || value <= 0 || value > std::numeric_limits<int>::max()) {
+            throw NumericOverflowError(literal, context_name);
+        }
+        return static_cast<int>(value);
+    } catch (const std::invalid_argument &) {
+        throw NumericOverflowError(literal, context_name);
+    } catch (const std::out_of_range &) {
+        throw NumericOverflowError(literal, context_name);
+    }
+}
+
+int64_t parse_non_negative_bigint_literal(const std::string &literal, const std::string &context_name) {
+    try {
+        size_t idx = 0;
+        long long value = std::stoll(literal, &idx, 10);
+        if (idx != literal.size() || value < 0) {
+            throw NumericOverflowError(literal, context_name);
+        }
+        return static_cast<int64_t>(value);
+    } catch (const std::invalid_argument &) {
+        throw NumericOverflowError(literal, context_name);
+    } catch (const std::out_of_range &) {
+        throw NumericOverflowError(literal, context_name);
+    }
+}
 %}
 
 // request a pure (reentrant) parser
@@ -21,15 +53,15 @@ using namespace ast;
 %define parse.error verbose
 
 // keywords
-%token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
-WHERE UPDATE SET SELECT INT CHAR FLOAT DATETIME INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
+%token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY LIMIT
+WHERE UPDATE SET SELECT INT BIGINT CHAR FLOAT DATETIME INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
 COUNT MAX MIN SUM AS
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
 // type-specific tokens
 %token <sv_str> IDENTIFIER VALUE_STRING
-%token <sv_int> VALUE_INT
+%token <sv_str> VALUE_INT
 %token <sv_float> VALUE_FLOAT
 
 // specify types for non-terminal symbol
@@ -51,8 +83,10 @@ COUNT MAX MIN SUM AS
 %type <sv_set_clauses> setClauses
 %type <sv_cond> condition
 %type <sv_conds> whereClause optWhereClause
-%type <sv_orderby>  order_clause opt_order_clause
+%type <sv_orderby> order_item
+%type <sv_orderbys> order_clause opt_order_clause
 %type <sv_orderby_dir> opt_asc_desc
+%type <sv_bigint> opt_limit_clause
 %type <sv_str> optAlias
 
 %%
@@ -148,9 +182,9 @@ dml:
     {
         $$ = std::make_shared<UpdateStmt>($2, $4, $5);
     }
-    |   SELECT selector FROM tableList optWhereClause opt_order_clause
+    |   SELECT selector FROM tableList optWhereClause opt_order_clause opt_limit_clause
     {
-        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, $7);
     }
     ;
 
@@ -188,9 +222,13 @@ type:
     {
         $$ = std::make_shared<TypeLen>(SV_TYPE_INT, sizeof(int));
     }
+    |   BIGINT
+    {
+        $$ = std::make_shared<TypeLen>(SV_TYPE_BIGINT, sizeof(int64_t));
+    }
     |   CHAR '(' VALUE_INT ')'
     {
-        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, $3);
+        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, parse_positive_int_literal($3, "CHAR"));
     }
     |   FLOAT
     {
@@ -392,15 +430,37 @@ opt_order_clause:
     { 
         $$ = $3; 
     }
-    |   /* epsilon */ { /* ignore*/ }
+    |   /* epsilon */ { $$ = {}; }
     ;
 
 order_clause:
-      col  opt_asc_desc 
+      order_item
     { 
+        $$ = std::vector<std::shared_ptr<OrderBy>>{$1};
+    }
+    | order_clause ',' order_item
+    {
+        $$.push_back($3);
+    }
+    ;
+
+order_item:
+      col  opt_asc_desc
+    {
         $$ = std::make_shared<OrderBy>($1, $2);
     }
-    ;   
+    ;
+
+opt_limit_clause:
+    LIMIT VALUE_INT
+    {
+        $$ = parse_non_negative_bigint_literal($2, "LIMIT");
+    }
+    | /* epsilon */
+    {
+        $$ = -1;
+    }
+    ;
 
 opt_asc_desc:
     ASC          { $$ = OrderBy_ASC;     }

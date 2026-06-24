@@ -143,6 +143,12 @@ class StringOverflowError : public RMDBError {
     StringOverflowError() : RMDBError("String is too long") {}
 };
 
+class NumericOverflowError : public RMDBError {
+   public:
+    NumericOverflowError(const std::string &value, const std::string &target_type)
+        : RMDBError("Numeric value out of range for " + target_type + ": " + value) {}
+};
+
 class IncompatibleTypeError : public RMDBError {
    public:
     IncompatibleTypeError(const std::string &lhs, const std::string &rhs)

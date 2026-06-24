@@ -32,9 +32,9 @@ const char *help_info = "Supported SQL syntax:\n"
                    "  INSERT INTO table_name VALUES (value [, value ...])\n"
                    "  DELETE FROM table_name [WHERE where_clause]\n"
                    "  UPDATE table_name SET column_name = value [, column_name = value ...] [WHERE where_clause]\n"
-                   "  SELECT selector FROM table_name [WHERE where_clause]\n"
+                   "  SELECT selector FROM table_name [WHERE where_clause] [ORDER BY column [ASC|DESC] [, ...]] [LIMIT n]\n"
                    "type:\n"
-                   "  {INT | FLOAT | CHAR(n) | DATETIME}\n"
+                   "  {INT | BIGINT | FLOAT | CHAR(n) | DATETIME}\n"
                    "where_clause:\n"
                    "  condition [AND condition ...]\n"
                    "condition:\n"
@@ -159,6 +159,10 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
             char *rec_buf = Tuple->data + col.offset;
             if (col.type == TYPE_INT) {
                 int value;
+                memcpy(&value, rec_buf, sizeof(value));
+                col_str = std::to_string(value);
+            } else if (col.type == TYPE_BIGINT) {
+                int64_t value;
                 memcpy(&value, rec_buf, sizeof(value));
                 col_str = std::to_string(value);
             } else if (col.type == TYPE_FLOAT) {

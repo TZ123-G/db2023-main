@@ -17,42 +17,35 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <vector>
 
+#include "common/common.h"
 #include "parser/parser.h"
 #include "system/sm.h"
-#include "common/common.h"
 
-class Query{
-    public:
+class Query {
+   public:
     std::shared_ptr<ast::TreeNode> parse;
-    // TODO jointree
-    // where条件
     std::vector<Condition> conds;
-    // 投影列
     std::vector<TabCol> cols;
-    // 无分组聚合表达式
     std::vector<AggregateExpr> aggregates;
-    // 表名
+    std::vector<OrderByClause> order_bys;
     std::vector<std::string> tables;
-    // update 的set 值
+    bool has_limit = false;
+    size_t limit = 0;
     std::vector<SetClause> set_clauses;
-    //insert 的values值
     std::vector<Value> values;
-
-    Query(){}
-
 };
 
-class Analyze
-{
-private:
+class Analyze {
+   private:
     SmManager *sm_manager_;
-public:
-    Analyze(SmManager *sm_manager) : sm_manager_(sm_manager){}
-    ~Analyze(){}
+
+   public:
+    Analyze(SmManager *sm_manager) : sm_manager_(sm_manager) {}
+    ~Analyze() {}
 
     std::shared_ptr<Query> do_analyze(std::shared_ptr<ast::TreeNode> root);
 
-private:
+   private:
     TabCol check_column(const std::vector<ColMeta> &all_cols, TabCol target);
     void get_all_cols(const std::vector<std::string> &tab_names, std::vector<ColMeta> &all_cols);
     void get_clause(const std::vector<std::shared_ptr<ast::BinaryExpr>> &sv_conds, std::vector<Condition> &conds);

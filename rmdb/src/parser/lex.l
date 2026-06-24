@@ -80,6 +80,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "SUM" { return SUM; }
 "AS" { return AS; }
 "INT" { return INT; }
+"BIGINT" { return BIGINT; }
 "CHAR" { return CHAR; }
 "FLOAT" { return FLOAT; }
 "DATETIME" { return DATETIME; }
@@ -90,6 +91,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "HELP" { return HELP; }
 "ORDER" { return ORDER; }
 "BY" {  return BY;  }
+"LIMIT" { return LIMIT; }
 "ASC" { return ASC; }
     /* operators */
 ">=" { return GEQ; }
@@ -103,7 +105,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 }
     /* literals */
 {value_int} {
-    yylval->sv_int = atoi(yytext);
+    yylval->sv_str = yytext;
     return VALUE_INT;
 }
 {value_float} {

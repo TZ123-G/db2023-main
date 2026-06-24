@@ -44,6 +44,7 @@ private:
     static std::string type2str(SvType type) {
         static std::map<SvType, std::string> m{
                 {SV_TYPE_INT,    "INT"},
+                {SV_TYPE_BIGINT, "BIGINT"},
                 {SV_TYPE_FLOAT,  "FLOAT"},
                 {SV_TYPE_STRING, "STRING"},
                 {SV_TYPE_DATETIME, "DATETIME"},
@@ -170,6 +171,15 @@ private:
             print_node_list(x->select_items, offset);
             print_val_list(x->tabs, offset);
             print_node_list(x->conds, offset);
+            print_node_list(x->orders, offset);
+            if (x->has_limit) {
+                print_val(x->limit, offset);
+            }
+        } else if (auto x = std::dynamic_pointer_cast<OrderBy>(node)) {
+            std::cout << "ORDER_BY\n";
+            print_node(x->col, offset);
+            print_val(x->orderby_dir == OrderBy_DESC ? "DESC" :
+                      (x->orderby_dir == OrderBy_ASC ? "ASC" : "DEFAULT"), offset);
         } else if (auto x = std::dynamic_pointer_cast<TxnBegin>(node)) {
             std::cout << "BEGIN\n";
         } else if (auto x = std::dynamic_pointer_cast<TxnCommit>(node)) {

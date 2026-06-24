@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 #include <string>
 #include <memory>
@@ -20,7 +21,7 @@ enum JoinType {
 namespace ast {
 
 enum SvType {
-    SV_TYPE_INT, SV_TYPE_FLOAT, SV_TYPE_STRING, SV_TYPE_DATETIME
+    SV_TYPE_INT, SV_TYPE_BIGINT, SV_TYPE_FLOAT, SV_TYPE_STRING, SV_TYPE_DATETIME
 };
 
 enum SvCompOp {
@@ -125,9 +126,9 @@ struct Value : public Expr {
 };
 
 struct IntLit : public Value {
-    int val;
+    std::string val;
 
-    IntLit(int val_) : val(val_) {}
+    IntLit(std::string val_) : val(std::move(val_)) {}
 };
 
 struct FloatLit : public Value {
@@ -182,10 +183,10 @@ struct BinaryExpr : public TreeNode {
 
 struct OrderBy : public TreeNode
 {
-    std::shared_ptr<Col> cols;
+    std::shared_ptr<Col> col;
     OrderByDir orderby_dir;
-    OrderBy( std::shared_ptr<Col> cols_, OrderByDir orderby_dir_) :
-       cols(std::move(cols_)), orderby_dir(std::move(orderby_dir_)) {}
+    OrderBy(std::shared_ptr<Col> col_, OrderByDir orderby_dir_) :
+       col(std::move(col_)), orderby_dir(std::move(orderby_dir_)) {}
 };
 
 struct InsertStmt : public TreeNode {
@@ -234,22 +235,25 @@ struct SelectStmt : public TreeNode {
 
     
     bool has_sort;
-    std::shared_ptr<OrderBy> order;
+    std::vector<std::shared_ptr<OrderBy>> orders;
+    bool has_limit;
+    size_t limit;
 
 
     SelectStmt(std::vector<std::shared_ptr<SelectItem>> select_items_,
                std::vector<std::string> tabs_,
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
-               std::shared_ptr<OrderBy> order_) :
+               std::vector<std::shared_ptr<OrderBy>> orders_,
+               int64_t limit_) :
             select_items(std::move(select_items_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
-            order(std::move(order_)) {
-                has_sort = (bool)order;
+            orders(std::move(orders_)), has_limit(limit_ >= 0), limit(limit_ >= 0 ? static_cast<size_t>(limit_) : 0) {
+                has_sort = !orders.empty();
             }
 };
 
 // Semantic value
 struct SemValue {
-    int sv_int;
+    int64_t sv_bigint;
     float sv_float;
     std::string sv_str;
     OrderByDir sv_orderby_dir;
@@ -283,6 +287,7 @@ struct SemValue {
     std::vector<std::shared_ptr<BinaryExpr>> sv_conds;
 
     std::shared_ptr<OrderBy> sv_orderby;
+    std::vector<std::shared_ptr<OrderBy>> sv_orderbys;
 };
 
 extern std::shared_ptr<ast::TreeNode> parse_tree;

@@ -34,6 +34,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "gtest/gtest.h"
 #include "common/datetime.h"
+#include "execution/execution_sort.h"
 #include "index/ix_index_handle.h"
 #include "replacer/lru_replacer.h"
 #include "storage/disk_manager.h"
@@ -96,6 +97,116 @@ TEST(DatetimeTest, EncodedValuesPreserveChronologicalOrder) {
     EXPECT_LT(ix_compare(reinterpret_cast<const char *>(&earlier), reinterpret_cast<const char *>(&later),
                          TYPE_DATETIME, DATETIME_LEN),
               0);
+}
+
+TEST(BigintTest, RawEncodingAndComparison) {
+    Value value;
+    value.set_bigint(-922337203685477580LL);
+    value.init_raw(sizeof(int64_t));
+
+    int64_t decoded = 0;
+    memcpy(&decoded, value.raw->data, sizeof(decoded));
+    EXPECT_EQ(decoded, -922337203685477580LL);
+
+    int64_t smaller = -922337203685477580LL;
+    int64_t larger = 372036854775807LL;
+    EXPECT_LT(ix_compare(reinterpret_cast<const char *>(&smaller), reinterpret_cast<const char *>(&larger),
+                         TYPE_BIGINT, sizeof(int64_t)),
+              0);
+}
+
+class MockTupleExecutor : public AbstractExecutor {
+   public:
+    MockTupleExecutor(std::vector<ColMeta> cols, std::vector<RmRecord> rows)
+        : cols_(std::move(cols)), rows_(std::move(rows)) {}
+
+    size_t tupleLen() const override { return rows_.empty() ? 0 : rows_[0].size; }
+
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    void beginTuple() override {
+        cursor_ = 0;
+        if (!is_end()) {
+            rid_ = {0, static_cast<int>(cursor_)};
+        }
+    }
+
+    void nextTuple() override {
+        if (is_end()) {
+            return;
+        }
+        ++cursor_;
+        if (!is_end()) {
+            rid_ = {0, static_cast<int>(cursor_)};
+        }
+    }
+
+    bool is_end() const override { return cursor_ >= rows_.size(); }
+
+    std::unique_ptr<RmRecord> Next() override {
+        if (is_end()) {
+            return nullptr;
+        }
+        return std::make_unique<RmRecord>(rows_[cursor_]);
+    }
+
+    Rid &rid() override { return rid_; }
+
+   private:
+    std::vector<ColMeta> cols_;
+    std::vector<RmRecord> rows_;
+    size_t cursor_ = 0;
+    Rid rid_{};
+};
+
+RmRecord make_sort_record(const std::string &company, int order_number) {
+    RmRecord record(14);
+    memset(record.data, 0, record.size);
+    memcpy(record.data, company.c_str(), std::min<size_t>(company.size(), 10));
+    memcpy(record.data + 10, &order_number, sizeof(order_number));
+    return record;
+}
+
+TEST(SortExecutorTest, SupportsMultiKeyOrderByAndLimit) {
+    std::vector<ColMeta> cols = {
+        {.tab_name = "orders", .name = "company", .type = TYPE_STRING, .len = 10, .offset = 0, .index = false},
+        {.tab_name = "orders", .name = "order_number", .type = TYPE_INT, .len = 4, .offset = 10, .index = false},
+    };
+    std::vector<RmRecord> rows = {
+        make_sort_record("AAA", 12),
+        make_sort_record("ABB", 13),
+        make_sort_record("ABC", 19),
+        make_sort_record("ACA", 1),
+    };
+
+    std::vector<OrderByClause> order_bys = {
+        {.col = {.tab_name = "orders", .col_name = "company"}, .is_desc = true},
+        {.col = {.tab_name = "orders", .col_name = "order_number"}, .is_desc = false},
+    };
+    SortExecutor by_company(std::make_unique<MockTupleExecutor>(cols, rows), order_bys, false, 0);
+    by_company.beginTuple();
+
+    std::vector<std::string> companies;
+    for (; !by_company.is_end(); by_company.nextTuple()) {
+        auto record = by_company.Next();
+        companies.emplace_back(record->data, record->data + 3);
+    }
+    EXPECT_EQ(companies, (std::vector<std::string>{"ACA", "ABC", "ABB", "AAA"}));
+
+    std::vector<OrderByClause> by_number = {
+        {.col = {.tab_name = "orders", .col_name = "order_number"}, .is_desc = false},
+    };
+    SortExecutor limited(std::make_unique<MockTupleExecutor>(cols, rows), by_number, true, 2);
+    limited.beginTuple();
+
+    std::vector<int> order_numbers;
+    for (; !limited.is_end(); limited.nextTuple()) {
+        auto record = limited.Next();
+        int value = 0;
+        memcpy(&value, record->data + 10, sizeof(value));
+        order_numbers.push_back(value);
+    }
+    EXPECT_EQ(order_numbers, (std::vector<int>{1, 12}));
 }
 
 // 创建BufferPoolManager
