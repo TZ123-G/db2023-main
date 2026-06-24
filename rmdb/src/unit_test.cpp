@@ -34,6 +34,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "gtest/gtest.h"
 #include "common/datetime.h"
+#include "execution/executor_nestedloop_join.h"
 #include "execution/execution_sort.h"
 #include "index/ix_index_handle.h"
 #include "replacer/lru_replacer.h"
@@ -167,6 +168,12 @@ RmRecord make_sort_record(const std::string &company, int order_number) {
     return record;
 }
 
+RmRecord make_join_record(int value) {
+    RmRecord record(sizeof(int));
+    memcpy(record.data, &value, sizeof(value));
+    return record;
+}
+
 TEST(SortExecutorTest, SupportsMultiKeyOrderByAndLimit) {
     std::vector<ColMeta> cols = {
         {.tab_name = "orders", .name = "company", .type = TYPE_STRING, .len = 10, .offset = 0, .index = false},
@@ -207,6 +214,51 @@ TEST(SortExecutorTest, SupportsMultiKeyOrderByAndLimit) {
         order_numbers.push_back(value);
     }
     EXPECT_EQ(order_numbers, (std::vector<int>{1, 12}));
+}
+
+TEST(BlockNestedLoopJoinExecutorTest, SupportsMultipleBlocksAndNonEquiJoin) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "t_id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<RmRecord> left_rows = {
+        make_join_record(1),
+        make_join_record(2),
+        make_join_record(3),
+    };
+    std::vector<RmRecord> right_rows = {
+        make_join_record(2),
+        make_join_record(3),
+        make_join_record(4),
+    };
+
+    Condition cond;
+    cond.lhs_col = {.tab_name = "t1", .col_name = "id"};
+    cond.op = OP_LT;
+    cond.is_rhs_val = false;
+    cond.rhs_col = {.tab_name = "t2", .col_name = "t_id"};
+
+    NestedLoopJoinExecutor executor(std::make_unique<MockTupleExecutor>(left_cols, left_rows),
+                                    std::make_unique<MockTupleExecutor>(right_cols, right_rows), {cond},
+                                    sizeof(int) * 2);
+    executor.beginTuple();
+
+    std::vector<std::pair<int, int>> pairs;
+    for (; !executor.is_end(); executor.nextTuple()) {
+        auto record = executor.Next();
+        int left_val = 0;
+        int right_val = 0;
+        memcpy(&left_val, record->data, sizeof(left_val));
+        memcpy(&right_val, record->data + sizeof(int), sizeof(right_val));
+        pairs.emplace_back(left_val, right_val);
+    }
+
+    std::sort(pairs.begin(), pairs.end());
+    EXPECT_EQ(pairs, (std::vector<std::pair<int, int>>{
+        {1, 2}, {1, 3}, {1, 4}, {2, 3}, {2, 4}, {3, 4},
+    }));
 }
 
 // 创建BufferPoolManager
