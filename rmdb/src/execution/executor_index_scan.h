@@ -69,8 +69,12 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
-        IxIndexHandle *ih = sm_manager_->ihs_.at(
-            sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols)).get();
+        auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols);
+        auto ih_it = sm_manager_->ihs_.find(ix_name);
+        if (ih_it == sm_manager_->ihs_.end()) {
+            throw InternalError("Index " + ix_name + " not loaded for table " + tab_name_);
+        }
+        IxIndexHandle *ih = ih_it->second.get();
         std::vector<char> lower(index_meta_.col_tot_len);
         std::vector<char> upper(index_meta_.col_tot_len);
         fill_key_extreme(lower.data(), false, 0);
@@ -124,12 +128,16 @@ class IndexScanExecutor : public AbstractExecutor {
             if (best_lower != nullptr) {
                 memcpy(lower.data() + offset, best_lower->rhs_val.raw->data, col.len);
                 lower_exclusive = best_lower->op == OP_GT;
-                fill_key_extreme(lower.data(), lower_exclusive, col_idx + 1);
+                // When lower bound is exclusive (OP_GT), fill suffix with max values so that
+                // upper_bound() returns the first key strictly greater than the prefix.
+                fill_key_extreme(lower.data(), /*fill_max=*/lower_exclusive, col_idx + 1);
             }
             if (best_upper != nullptr) {
                 memcpy(upper.data() + offset, best_upper->rhs_val.raw->data, col.len);
                 upper_inclusive = best_upper->op == OP_LE;
-                fill_key_extreme(upper.data(), upper_inclusive, col_idx + 1);
+                // When upper bound is inclusive (OP_LE), fill suffix with max values and use
+                // upper_bound(); when exclusive (OP_LT), fill suffix with min values and use lower_bound().
+                fill_key_extreme(upper.data(), /*fill_max=*/upper_inclusive, col_idx + 1);
             }
             break;
         }
@@ -179,24 +187,28 @@ class IndexScanExecutor : public AbstractExecutor {
     bool is_end() const override { return scan_ == nullptr || scan_->is_end(); }
 
    private:
-    void fill_key_extreme(char *key, bool maximum, size_t begin_col) {
+    // Fill suffix columns (from begin_col onwards) with extreme values.
+    // When fill_max=true, fills with type max values (0xff for strings).
+    // When fill_max=false, fills with type min values (0 for strings).
+    // Used to construct bound keys for inequality scans.
+    void fill_key_extreme(char *key, bool fill_max, size_t begin_col) {
         int offset = 0;
         for (size_t i = 0; i < index_meta_.cols.size(); ++i) {
             const ColMeta &col = index_meta_.cols[i];
             if (i >= begin_col) {
                 if (col.type == TYPE_INT) {
-                    int value = maximum ? std::numeric_limits<int>::max() : std::numeric_limits<int>::lowest();
+                    int value = fill_max ? std::numeric_limits<int>::max() : std::numeric_limits<int>::lowest();
                     memcpy(key + offset, &value, sizeof(value));
                 } else if (col.type == TYPE_BIGINT || col.type == TYPE_DATETIME) {
-                    int64_t value = maximum ? std::numeric_limits<int64_t>::max()
+                    int64_t value = fill_max ? std::numeric_limits<int64_t>::max()
                                             : std::numeric_limits<int64_t>::lowest();
                     memcpy(key + offset, &value, sizeof(value));
                 } else if (col.type == TYPE_FLOAT) {
-                    float value = maximum ? std::numeric_limits<float>::max()
+                    float value = fill_max ? std::numeric_limits<float>::max()
                                           : std::numeric_limits<float>::lowest();
                     memcpy(key + offset, &value, sizeof(value));
                 } else {
-                    memset(key + offset, maximum ? 0xff : 0, col.len);
+                    memset(key + offset, fill_max ? 0xff : 0, col.len);
                 }
             }
             offset += col.len;

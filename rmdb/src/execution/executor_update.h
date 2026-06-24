@@ -42,6 +42,15 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
+        auto get_ih = [this](const IndexMeta &index) -> IxIndexHandle * {
+            auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+            auto ih_it = sm_manager_->ihs_.find(ix_name);
+            if (ih_it == sm_manager_->ihs_.end()) {
+                throw InternalError("Index " + ix_name + " not loaded for table " + tab_name_);
+            }
+            return ih_it->second.get();
+        };
+
         struct PendingUpdate {
             Rid rid;
             std::unique_ptr<RmRecord> old_record;
@@ -84,8 +93,7 @@ class UpdateExecutor : public AbstractExecutor {
             }
             const auto &index = tab_.indexes[index_no];
             std::unordered_set<std::string> new_keys;
-            auto ih = sm_manager_->ihs_.at(
-                sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+            auto ih = get_ih(index);
             for (const auto &item : pending) {
                 const auto &key = item.new_keys[index_no];
                 std::string key_string(key.data(), key.size());
@@ -115,8 +123,7 @@ class UpdateExecutor : public AbstractExecutor {
                     continue;
                 }
                 const auto &index = tab_.indexes[index_no];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                auto ih = get_ih(index);
                 ih->delete_entry(item.old_keys[index_no].data(), context_->txn_);
             }
         }
@@ -129,8 +136,7 @@ class UpdateExecutor : public AbstractExecutor {
                     continue;
                 }
                 const auto &index = tab_.indexes[index_no];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                auto ih = get_ih(index);
                 ih->insert_entry(item.new_keys[index_no].data(), item.rid, context_->txn_);
             }
         }

@@ -50,12 +50,20 @@ class InsertExecutor : public AbstractExecutor {
             val.init_raw(col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
+        auto get_ih = [this](const IndexMeta &index) -> IxIndexHandle * {
+            auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+            auto ih_it = sm_manager_->ihs_.find(ix_name);
+            if (ih_it == sm_manager_->ihs_.end()) {
+                throw InternalError("Index " + ix_name + " not loaded for table " + tab_name_);
+            }
+            return ih_it->second.get();
+        };
+
         std::vector<std::vector<char>> keys;
         keys.reserve(tab_.indexes.size());
         for (const auto &index : tab_.indexes) {
+            auto ih = get_ih(index);
             auto key = build_index_key(index, rec.data);
-            auto ih = sm_manager_->ihs_.at(
-                sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
             std::vector<Rid> result;
             if (ih->get_value(key.data(), &result, context_->txn_)) {
                 throw UniqueConstraintError();
@@ -68,15 +76,13 @@ class InsertExecutor : public AbstractExecutor {
         try {
             for (; inserted < tab_.indexes.size(); ++inserted) {
                 const auto &index = tab_.indexes[inserted];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                auto ih = get_ih(index);
                 ih->insert_entry(keys[inserted].data(), rid_, context_->txn_);
             }
         } catch (...) {
             for (size_t i = 0; i < inserted; ++i) {
                 const auto &index = tab_.indexes[i];
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                auto ih = get_ih(index);
                 ih->delete_entry(keys[i].data(), context_->txn_);
             }
             fh_->delete_record(rid_, context_);

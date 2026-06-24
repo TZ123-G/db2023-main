@@ -41,10 +41,16 @@ class DeleteExecutor : public AbstractExecutor {
         for (const auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
             for (const auto &index : tab_.indexes) {
+                auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+                auto ih_it = sm_manager_->ihs_.find(ix_name);
+                if (ih_it == sm_manager_->ihs_.end()) {
+                    throw InternalError("Index " + ix_name + " not loaded for table " + tab_name_);
+                }
                 auto key = build_index_key(index, rec->data);
-                auto ih = sm_manager_->ihs_.at(
-                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-                ih->delete_entry(key.data(), context_->txn_);
+                if (!ih_it->second->delete_entry(key.data(), context_->txn_)) {
+                    throw InternalError("Failed to delete key from index " + ix_name +
+                                        ": key not found");
+                }
             }
             fh_->delete_record(rid, context_);
         }
