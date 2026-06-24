@@ -82,7 +82,7 @@ class SortExecutor : public AbstractExecutor {
             });
         }
         if (has_limit_ && tuples_.size() > limit_) {
-            tuples_.resize(limit_);
+            tuples_.erase(tuples_.begin() + limit_, tuples_.end());
         }
         if (!tuples_.empty()) {
             current_rid_ = tuples_[0].rid;

@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 
 #include <cerrno>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 

@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 #include <setjmp.h>
 #include <signal.h>
 #include <unistd.h>
+#include <algorithm>
 #include <atomic>
 
 #include "errors.h"
@@ -113,111 +114,95 @@ void *client_handler(void *sock_fd) {
         offset = 0;
 
         // 开启事务，初始化系统所需的上下文信息（包括事务对象指针、锁管理器指针、日志管理器指针、存放结果的buffer、记录结果长度的变量）
-        Context *context = new Context(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
-        SetTransaction(&txn_id, context);
+        Context context(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
+        SetTransaction(&txn_id, &context);
 
-        // 用于判断是否已经调用了yy_delete_buffer来删除buf
-        bool finish_analyze = false;
-        pthread_mutex_lock(buffer_mutex);
-        YY_BUFFER_STATE buf = yy_scan_string(data_recv);
-        ast::parse_tree = nullptr;
-        int parse_rc;
+        bool request_failed = false;
+        bool transaction_aborted = false;
+        bool parser_locked = false;
+        YY_BUFFER_STATE buf = nullptr;
+
+        auto cleanup_parser = [&]() {
+            if (buf != nullptr) {
+                yy_delete_buffer(buf);
+                buf = nullptr;
+            }
+            if (parser_locked) {
+                pthread_mutex_unlock(buffer_mutex);
+                parser_locked = false;
+            }
+        };
+        auto set_response = [&](const std::string &response) {
+            size_t response_len = std::min(response.size(), static_cast<size_t>(BUFFER_LENGTH - 1));
+            memcpy(data_send, response.data(), response_len);
+            data_send[response_len] = '\0';
+            offset = static_cast<int>(response_len);
+        };
+        auto append_output = [](const std::string &line) {
+            std::fstream outfile("output.txt", std::ios::out | std::ios::app);
+            outfile << line;
+        };
+
         try {
-            parse_rc = yyparse();
+            pthread_mutex_lock(buffer_mutex);
+            parser_locked = true;
+            buf = yy_scan_string(data_recv);
+            ast::parse_tree = nullptr;
+
+            int parse_rc = yyparse();
+            if (parse_rc != 0) {
+                request_failed = true;
+                set_response("failure\n");
+                append_output("failure\n");
+            } else if (ast::parse_tree != nullptr) {
+                std::shared_ptr<Query> query = analyze->do_analyze(ast::parse_tree);
+                cleanup_parser();
+
+                std::shared_ptr<Plan> plan = optimizer->plan_query(query, &context);
+                std::shared_ptr<PortalStmt> portalStmt = portal->start(plan, &context);
+                portal->run(portalStmt, ql_manager.get(), &txn_id, &context);
+                portal->drop();
+            }
+        } catch (TransactionAbortException &e) {
+            cleanup_parser();
+            request_failed = true;
+            transaction_aborted = true;
+            set_response("abort\n");
+            txn_manager->abort(context.txn_, log_manager.get());
+            std::cout << e.GetInfo() << std::endl;
+            append_output("abort\n");
         } catch (RMDBError &e) {
+            cleanup_parser();
+            request_failed = true;
             std::cerr << e.what() << std::endl;
-            memcpy(data_send, e.what(), e.get_msg_len());
-            data_send[e.get_msg_len()] = '\n';
-            data_send[e.get_msg_len() + 1] = '\0';
-            offset = e.get_msg_len() + 1;
+            set_response(std::string(e.what()) + "\n");
+            append_output("failure\n");
+        } catch (std::exception &e) {
+            cleanup_parser();
+            request_failed = true;
+            std::cerr << "Unexpected error: " << e.what() << std::endl;
+            set_response(std::string("Error: ") + e.what() + "\n");
+            append_output("failure\n");
+        }
+        cleanup_parser();
 
-            std::fstream outfile;
-            outfile.open("output.txt", std::ios::out | std::ios::app);
-            outfile << "failure\n";
-            outfile.close();
-
-            yy_delete_buffer(buf);
-            pthread_mutex_unlock(buffer_mutex);
-            if (write(fd, data_send, offset + 1) == -1) {
-                break;
+        if (context.txn_->get_txn_mode() == false && !transaction_aborted) {
+            if (request_failed) {
+                txn_manager->abort(context.txn_, context.log_mgr_);
+            } else {
+                txn_manager->commit(context.txn_, context.log_mgr_);
             }
-            continue;
-        }
-        if (parse_rc == 0 && ast::parse_tree != nullptr) {
-            if (ast::parse_tree != nullptr) {
-                try {
-                    // analyze and rewrite
-                    std::shared_ptr<Query> query = analyze->do_analyze(ast::parse_tree);
-                    yy_delete_buffer(buf);
-                    finish_analyze = true;
-                    pthread_mutex_unlock(buffer_mutex);
-                    // 优化器
-                    std::shared_ptr<Plan> plan = optimizer->plan_query(query, context);
-                    // portal
-                    std::shared_ptr<PortalStmt> portalStmt = portal->start(plan, context);
-                    portal->run(portalStmt, ql_manager.get(), &txn_id, context);
-                    portal->drop();
-                } catch (TransactionAbortException &e) {
-                    // 事务需要回滚，需要把abort信息返回给客户端并写入output.txt文件中
-                    std::string str = "abort\n";
-                    memcpy(data_send, str.c_str(), str.length());
-                    data_send[str.length()] = '\0';
-                    offset = str.length();
-
-                    // 回滚事务
-                    txn_manager->abort(context->txn_, log_manager.get());
-                    std::cout << e.GetInfo() << std::endl;
-
-                    std::fstream outfile;
-                    outfile.open("output.txt", std::ios::out | std::ios::app);
-                    outfile << str;
-                    outfile.close();
-                } catch (RMDBError &e) {
-                    // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
-                    std::cerr << e.what() << std::endl;
-
-                    memcpy(data_send, e.what(), e.get_msg_len());
-                    data_send[e.get_msg_len()] = '\n';
-                    data_send[e.get_msg_len() + 1] = '\0';
-                    offset = e.get_msg_len() + 1;
-
-                    // 将报错信息写入output.txt
-                    std::fstream outfile;
-                    outfile.open("output.txt",std::ios::out | std::ios::app);
-                    outfile << "failure\n";
-                    outfile.close();
-                }
-            }
-        }
-        if (parse_rc != 0 && finish_analyze == false) {
-            std::string str = "failure\n";
-            memcpy(data_send, str.c_str(), str.length());
-            data_send[str.length()] = '\0';
-            offset = str.length();
-
-            std::fstream outfile;
-            outfile.open("output.txt", std::ios::out | std::ios::app);
-            outfile << str;
-            outfile.close();
-        }
-        if(finish_analyze == false) {
-            yy_delete_buffer(buf);
-            pthread_mutex_unlock(buffer_mutex);
         }
         // future TODO: 格式化 sql_handler.result, 传给客户端
         // send result with fixed format, use protobuf in the future
         if (write(fd, data_send, offset + 1) == -1) {
             break;
         }
-        // 如果是单挑语句，需要按照一个完整的事务来执行，所以执行完当前语句后，自动提交事务
-        if(context->txn_->get_txn_mode() == false)
-        {
-            txn_manager->commit(context->txn_, context->log_mgr_);
-        }
     }
 
     // Clear
     std::cout << "Terminating current client_connection..." << std::endl;
+    delete[] data_send;
     close(fd);           // close a file descriptor.
     pthread_exit(NULL);  // terminate calling thread!
 }
