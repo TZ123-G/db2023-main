@@ -133,6 +133,11 @@ class IndexExistsError : public RMDBError {
     }
 };
 
+class UniqueConstraintError : public RMDBError {
+   public:
+    UniqueConstraintError() : RMDBError("Unique index constraint violated") {}
+};
+
 // QL errors
 class InvalidValueCountError : public RMDBError {
    public:

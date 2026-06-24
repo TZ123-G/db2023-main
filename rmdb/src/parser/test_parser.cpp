@@ -22,6 +22,7 @@ int main() {
         "drop table tb;",
         "create index tb(a);",
         "create index tb(a, b, c);",
+        "show index from tb;",
         "drop index tb(a, b, c);",
         "drop index tb(b);",
         "insert into tb values (1, 3.14, 'pi');",

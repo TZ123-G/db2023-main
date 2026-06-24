@@ -9,9 +9,13 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <string>
+#include <unordered_set>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
+#include "index_key.h"
 #include "index/ix.h"
 #include "system/sm.h"
 
@@ -38,16 +42,97 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
+        struct PendingUpdate {
+            Rid rid;
+            std::unique_ptr<RmRecord> old_record;
+            std::unique_ptr<RmRecord> new_record;
+            std::vector<std::vector<char>> old_keys;
+            std::vector<std::vector<char>> new_keys;
+            std::vector<bool> changed_indexes;
+        };
+
+        std::vector<PendingUpdate> pending;
+        pending.reserve(rids_.size());
         for (const auto &rid : rids_) {
-            auto rec = fh_->get_record(rid, context_);
+            PendingUpdate item;
+            item.rid = rid;
+            item.old_record = fh_->get_record(rid, context_);
+            item.new_record = std::make_unique<RmRecord>(*item.old_record);
             for (auto &set_clause : set_clauses_) {
                 auto col = tab_.get_col(set_clause.lhs.col_name);
                 if (set_clause.rhs.raw == nullptr) {
                     set_clause.rhs.init_raw(col->len);
                 }
-                memcpy(rec->data + col->offset, set_clause.rhs.raw->data, col->len);
+                memcpy(item.new_record->data + col->offset, set_clause.rhs.raw->data, col->len);
             }
-            fh_->update_record(rid, rec->data, context_);
+            for (const auto &index : tab_.indexes) {
+                auto old_key = build_index_key(index, item.old_record->data);
+                auto new_key = build_index_key(index, item.new_record->data);
+                item.changed_indexes.push_back(old_key != new_key);
+                item.old_keys.push_back(std::move(old_key));
+                item.new_keys.push_back(std::move(new_key));
+            }
+            pending.push_back(std::move(item));
+        }
+
+        for (size_t index_no = 0; index_no < tab_.indexes.size(); ++index_no) {
+            bool any_changed = std::any_of(pending.begin(), pending.end(), [&](const PendingUpdate &item) {
+                return item.changed_indexes[index_no];
+            });
+            if (!any_changed) {
+                continue;
+            }
+            const auto &index = tab_.indexes[index_no];
+            std::unordered_set<std::string> new_keys;
+            auto ih = sm_manager_->ihs_.at(
+                sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+            for (const auto &item : pending) {
+                const auto &key = item.new_keys[index_no];
+                std::string key_string(key.data(), key.size());
+                if (!new_keys.insert(key_string).second) {
+                    throw UniqueConstraintError();
+                }
+                if (!item.changed_indexes[index_no]) {
+                    continue;
+                }
+                std::vector<Rid> existing;
+                if (ih->get_value(key.data(), &existing, context_->txn_)) {
+                    const Rid &found = existing.front();
+                    auto target = std::find_if(pending.begin(), pending.end(), [&](const PendingUpdate &candidate) {
+                        return candidate.rid == found;
+                    });
+                    if (found != item.rid &&
+                        (target == pending.end() || !target->changed_indexes[index_no])) {
+                        throw UniqueConstraintError();
+                    }
+                }
+            }
+        }
+
+        for (auto &item : pending) {
+            for (size_t index_no = 0; index_no < tab_.indexes.size(); ++index_no) {
+                if (!item.changed_indexes[index_no]) {
+                    continue;
+                }
+                const auto &index = tab_.indexes[index_no];
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                ih->delete_entry(item.old_keys[index_no].data(), context_->txn_);
+            }
+        }
+        for (auto &item : pending) {
+            fh_->update_record(item.rid, item.new_record->data, context_);
+        }
+        for (auto &item : pending) {
+            for (size_t index_no = 0; index_no < tab_.indexes.size(); ++index_no) {
+                if (!item.changed_indexes[index_no]) {
+                    continue;
+                }
+                const auto &index = tab_.indexes[index_no];
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                ih->insert_entry(item.new_keys[index_no].data(), item.rid, context_->txn_);
+            }
         }
         return nullptr;
     }

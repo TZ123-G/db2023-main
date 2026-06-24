@@ -164,6 +164,27 @@ void SmManager::show_tables(Context* context) {
     outfile.close();
 }
 
+void SmManager::show_index(const std::string& tab_name, Context* context) {
+    TabMeta &tab = db_.get_table(tab_name);
+    std::fstream outfile("output.txt", std::ios::out | std::ios::app);
+    if (!outfile.is_open()) {
+        throw FileNotFoundError("output.txt");
+    }
+    RecordPrinter printer(3);
+    for (const auto &index : tab.indexes) {
+        std::string cols = "(";
+        for (size_t i = 0; i < index.cols.size(); ++i) {
+            if (i > 0) {
+                cols += ",";
+            }
+            cols += index.cols[i].name;
+        }
+        cols += ")";
+        printer.print_record({tab_name, "unique", cols}, context);
+        outfile << "| " << tab_name << " | unique | " << cols << " |\n";
+    }
+}
+
 /**
  * @description: 显示表的元数据
  * @param {string&} tab_name 表名称
@@ -260,7 +281,60 @@ void SmManager::drop_table(const std::string& tab_name, Context* context) {
  * @param {Context*} context
  */
 void SmManager::create_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    throw InternalError("Index is not supported in this task");
+    TabMeta &tab = db_.get_table(tab_name);
+    if (col_names.empty()) {
+        throw IndexNotFoundError(tab_name, col_names);
+    }
+    if (tab.is_index(col_names)) {
+        throw IndexExistsError(tab_name, col_names);
+    }
+
+    IndexMeta index;
+    index.tab_name = tab_name;
+    index.col_num = static_cast<int>(col_names.size());
+    index.col_tot_len = 0;
+    for (const auto &name : col_names) {
+        ColMeta col = *tab.get_col(name);
+        index.col_tot_len += col.len;
+        index.cols.push_back(col);
+    }
+
+    ix_manager_->create_index(tab_name, index.cols);
+    std::unique_ptr<IxIndexHandle> ih;
+    try {
+        ih = ix_manager_->open_index(tab_name, index.cols);
+        RmFileHandle *fh = fhs_.at(tab_name).get();
+        for (RmScan scan(fh); !scan.is_end(); scan.next()) {
+            Rid rid = scan.rid();
+            auto rec = fh->get_record(rid, context);
+            std::vector<char> key(index.col_tot_len);
+            int offset = 0;
+            for (const auto &col : index.cols) {
+                memcpy(key.data() + offset, rec->data + col.offset, col.len);
+                offset += col.len;
+            }
+            ih->insert_entry(key.data(), rid, context == nullptr ? nullptr : context->txn_);
+        }
+    } catch (...) {
+        if (ih != nullptr) {
+            ix_manager_->close_index(ih.get());
+            ih.reset();
+        }
+        if (ix_manager_->exists(tab_name, index.cols)) {
+            ix_manager_->destroy_index(tab_name, index.cols);
+        }
+        throw;
+    }
+
+    std::string ix_name = ix_manager_->get_index_name(tab_name, index.cols);
+    ihs_.emplace(ix_name, std::move(ih));
+    tab.indexes.push_back(index);
+    for (auto &col : tab.cols) {
+        if (std::find(col_names.begin(), col_names.end(), col.name) != col_names.end()) {
+            col.index = true;
+        }
+    }
+    flush_meta();
 }
 
 /**
@@ -270,7 +344,27 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    throw InternalError("Index is not supported in this task");
+    (void)context;
+    TabMeta &tab = db_.get_table(tab_name);
+    auto index_it = tab.get_index_meta(col_names);
+    std::vector<ColMeta> cols = index_it->cols;
+    std::string ix_name = ix_manager_->get_index_name(tab_name, cols);
+    auto handle = ihs_.find(ix_name);
+    if (handle != ihs_.end()) {
+        ix_manager_->close_index(handle->second.get());
+        ihs_.erase(handle);
+    }
+    if (ix_manager_->exists(tab_name, cols)) {
+        ix_manager_->destroy_index(tab_name, cols);
+    }
+    tab.indexes.erase(index_it);
+    for (auto &col : tab.cols) {
+        col.index = std::any_of(tab.indexes.begin(), tab.indexes.end(), [&](const IndexMeta &index) {
+            return std::any_of(index.cols.begin(), index.cols.end(),
+                               [&](const ColMeta &index_col) { return index_col.name == col.name; });
+        });
+    }
+    flush_meta();
 }
 
 /**
@@ -280,5 +374,10 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<std::s
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<ColMeta>& cols, Context* context) {
-    throw InternalError("Index is not supported in this task");
+    std::vector<std::string> col_names;
+    col_names.reserve(cols.size());
+    for (const auto &col : cols) {
+        col_names.push_back(col.name);
+    }
+    drop_index(tab_name, col_names, context);
 }

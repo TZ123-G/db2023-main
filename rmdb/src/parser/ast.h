@@ -53,6 +53,12 @@ struct Help : public TreeNode {
 struct ShowTables : public TreeNode {
 };
 
+struct ShowIndex : public TreeNode {
+    std::string tab_name;
+
+    explicit ShowIndex(std::string tab_name_) : tab_name(std::move(tab_name_)) {}
+};
+
 struct TxnBegin : public TreeNode {
 };
 

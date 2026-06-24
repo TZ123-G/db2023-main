@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
+#include "index_key.h"
 #include "index/ix.h"
 #include "system/sm.h"
 
@@ -38,6 +39,13 @@ class DeleteExecutor : public AbstractExecutor {
 
     std::unique_ptr<RmRecord> Next() override {
         for (const auto &rid : rids_) {
+            auto rec = fh_->get_record(rid, context_);
+            for (const auto &index : tab_.indexes) {
+                auto key = build_index_key(index, rec->data);
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                ih->delete_entry(key.data(), context_->txn_);
+            }
             fh_->delete_record(rid, context_);
         }
         return nullptr;

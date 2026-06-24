@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
+#include "index_key.h"
 #include "index/ix.h"
 #include "system/sm.h"
 
@@ -49,20 +50,37 @@ class InsertExecutor : public AbstractExecutor {
             val.init_raw(col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
-        // Insert into record file
-        rid_ = fh_->insert_record(rec.data, context_);
-        
-        // Insert into index
-        for(size_t i = 0; i < tab_.indexes.size(); ++i) {
-            auto& index = tab_.indexes[i];
-            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            char* key = new char[index.col_tot_len];
-            int offset = 0;
-            for(size_t i = 0; i < index.col_num; ++i) {
-                memcpy(key + offset, rec.data + index.cols[i].offset, index.cols[i].len);
-                offset += index.cols[i].len;
+        std::vector<std::vector<char>> keys;
+        keys.reserve(tab_.indexes.size());
+        for (const auto &index : tab_.indexes) {
+            auto key = build_index_key(index, rec.data);
+            auto ih = sm_manager_->ihs_.at(
+                sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+            std::vector<Rid> result;
+            if (ih->get_value(key.data(), &result, context_->txn_)) {
+                throw UniqueConstraintError();
             }
-            ih->insert_entry(key, rid_, context_->txn_);
+            keys.push_back(std::move(key));
+        }
+
+        rid_ = fh_->insert_record(rec.data, context_);
+        size_t inserted = 0;
+        try {
+            for (; inserted < tab_.indexes.size(); ++inserted) {
+                const auto &index = tab_.indexes[inserted];
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                ih->insert_entry(keys[inserted].data(), rid_, context_->txn_);
+            }
+        } catch (...) {
+            for (size_t i = 0; i < inserted; ++i) {
+                const auto &index = tab_.indexes[i];
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                ih->delete_entry(keys[i].data(), context_->txn_);
+            }
+            fh_->delete_record(rid_, context_);
+            throw;
         }
         return nullptr;
     }

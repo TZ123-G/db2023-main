@@ -27,13 +27,44 @@ See the Mulan PSL v2 for more details. */
 bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_conds,
                              std::vector<std::string> &index_col_names) {
     index_col_names.clear();
-    for (auto &cond : curr_conds) {
-        if (cond.is_rhs_val && cond.op == OP_EQ && cond.lhs_col.tab_name.compare(tab_name) == 0) {
-            index_col_names.push_back(cond.lhs_col.col_name);
+    TabMeta &tab = sm_manager_->db_.get_table(tab_name);
+    size_t best_prefix = 0;
+    const IndexMeta *best_index = nullptr;
+    for (const auto &index : tab.indexes) {
+        size_t prefix = 0;
+        for (const auto &col : index.cols) {
+            bool has_equal = false;
+            bool has_range = false;
+            for (const auto &cond : curr_conds) {
+                if (!cond.is_rhs_val || cond.lhs_col.tab_name != tab_name ||
+                    cond.lhs_col.col_name != col.name) {
+                    continue;
+                }
+                has_equal = has_equal || cond.op == OP_EQ;
+                has_range = has_range || cond.op == OP_LT || cond.op == OP_LE ||
+                            cond.op == OP_GT || cond.op == OP_GE;
+            }
+            if (has_equal) {
+                ++prefix;
+                continue;
+            }
+            if (has_range) {
+                ++prefix;
+            }
+            break;
+        }
+        if (prefix > best_prefix) {
+            best_prefix = prefix;
+            best_index = &index;
         }
     }
-    TabMeta &tab = sm_manager_->db_.get_table(tab_name);
-    return tab.is_index(index_col_names);
+    if (best_index == nullptr) {
+        return false;
+    }
+    for (const auto &col : best_index->cols) {
+        index_col_names.push_back(col.name);
+    }
+    return true;
 }
 
 std::vector<Condition> pop_conds(std::vector<Condition> &conds, std::string tab_name) {
@@ -191,8 +222,10 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query) {
     std::vector<std::shared_ptr<Plan>> table_scan_executors(tables.size());
     for (size_t i = 0; i < tables.size(); i++) {
         auto curr_conds = pop_conds(query->conds, tables[i]);
+        std::vector<std::string> index_cols;
+        PlanTag scan_tag = get_index_cols(tables[i], curr_conds, index_cols) ? T_IndexScan : T_SeqScan;
         table_scan_executors[i] =
-            std::make_shared<ScanPlan>(T_SeqScan, sm_manager_, tables[i], curr_conds, std::vector<std::string>());
+            std::make_shared<ScanPlan>(scan_tag, sm_manager_, tables[i], curr_conds, std::move(index_cols));
     }
     if (tables.size() == 1) {
         return table_scan_executors[0];
@@ -319,14 +352,18 @@ std::shared_ptr<Plan> Planner::do_planner(std::shared_ptr<Query> query, Context 
         plannerRoot = std::make_shared<DMLPlan>(T_Insert, std::shared_ptr<Plan>(), x->tab_name, query->values,
                                                 std::vector<Condition>(), std::vector<SetClause>());
     } else if (auto x = std::dynamic_pointer_cast<ast::DeleteStmt>(query->parse)) {
+        std::vector<std::string> index_cols;
+        PlanTag scan_tag = get_index_cols(x->tab_name, query->conds, index_cols) ? T_IndexScan : T_SeqScan;
         std::shared_ptr<Plan> table_scan_executors =
-            std::make_shared<ScanPlan>(T_SeqScan, sm_manager_, x->tab_name, query->conds, std::vector<std::string>());
+            std::make_shared<ScanPlan>(scan_tag, sm_manager_, x->tab_name, query->conds, std::move(index_cols));
 
         plannerRoot = std::make_shared<DMLPlan>(T_Delete, table_scan_executors, x->tab_name, std::vector<Value>(),
                                                 query->conds, std::vector<SetClause>());
     } else if (auto x = std::dynamic_pointer_cast<ast::UpdateStmt>(query->parse)) {
+        std::vector<std::string> index_cols;
+        PlanTag scan_tag = get_index_cols(x->tab_name, query->conds, index_cols) ? T_IndexScan : T_SeqScan;
         std::shared_ptr<Plan> table_scan_executors =
-            std::make_shared<ScanPlan>(T_SeqScan, sm_manager_, x->tab_name, query->conds, std::vector<std::string>());
+            std::make_shared<ScanPlan>(scan_tag, sm_manager_, x->tab_name, query->conds, std::move(index_cols));
         plannerRoot = std::make_shared<DMLPlan>(T_Update, table_scan_executors, x->tab_name, std::vector<Value>(),
                                                 query->conds, query->set_clauses);
     } else if (auto x = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse)) {

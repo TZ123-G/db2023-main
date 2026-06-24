@@ -56,11 +56,6 @@ class IxManager {
 
     void create_index(const std::string &filename, const std::vector<ColMeta>& index_cols) {
         std::string ix_name = get_index_name(filename, index_cols);
-        // Create index file
-        disk_manager_->create_file(ix_name);
-        // Open index file
-        int fd = disk_manager_->open_file(ix_name);
-
         // Create file header and write to file
         // Theoretically we have: |page_hdr| + (|attr| + |rid|) * n <= PAGE_SIZE
         // but we reserve one slot for convenient inserting and deleting, i.e.
@@ -78,6 +73,9 @@ class IxManager {
         int btree_order = static_cast<int>((PAGE_SIZE - sizeof(IxPageHdr)) / (col_tot_len + sizeof(Rid)) - 1);
         assert(btree_order > 2);
 
+        disk_manager_->create_file(ix_name);
+        int fd = disk_manager_->open_file(ix_name);
+
         // Create file header and write to file
         IxFileHdr* fhdr = new IxFileHdr(IX_NO_PAGE, IX_INIT_NUM_PAGES, IX_INIT_ROOT_PAGE,
                                 col_num, col_tot_len, btree_order, (btree_order + 1) * col_tot_len,
@@ -92,6 +90,8 @@ class IxManager {
         fhdr->serialize(data);
 
         disk_manager_->write_page(fd, IX_FILE_HDR_PAGE, data, fhdr->tot_len_);
+        delete[] data;
+        delete fhdr;
 
         char page_buf[PAGE_SIZE];  // 在内存中初始化page_buf中的内容，然后将其写入磁盘
         memset(page_buf, 0, PAGE_SIZE);
@@ -127,7 +127,7 @@ class IxManager {
             disk_manager_->write_page(fd, IX_INIT_ROOT_PAGE, page_buf, PAGE_SIZE);
         }
 
-        disk_manager_->set_fd2pageno(fd, IX_INIT_NUM_PAGES - 1);  // DEBUG
+        disk_manager_->set_fd2pageno(fd, IX_INIT_NUM_PAGES);
 
         // Close index file
         disk_manager_->close_file(fd);
@@ -160,6 +160,7 @@ class IxManager {
         char* data = new char[ih->file_hdr_->tot_len_];
         ih->file_hdr_->serialize(data);
         disk_manager_->write_page(ih->fd_, IX_FILE_HDR_PAGE, data, ih->file_hdr_->tot_len_);
+        delete[] data;
         // 缓冲区的所有页刷到磁盘，注意这句话必须写在close_file前面
         buffer_pool_manager_->flush_all_pages(ih->fd_);
         disk_manager_->close_file(ih->fd_);

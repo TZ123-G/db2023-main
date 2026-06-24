@@ -118,6 +118,41 @@ TEST(BigintTest, RawEncodingAndComparison) {
               0);
 }
 
+TEST(IndexNodeTest, MaintainsSortedUniqueKeysAndBounds) {
+    IxFileHdr file_hdr;
+    file_hdr.col_num_ = 1;
+    file_hdr.col_types_ = {TYPE_INT};
+    file_hdr.col_lens_ = {static_cast<int>(sizeof(int))};
+    file_hdr.col_tot_len_ = sizeof(int);
+    file_hdr.btree_order_ = 8;
+    file_hdr.keys_size_ = (file_hdr.btree_order_ + 1) * file_hdr.col_tot_len_;
+
+    Page page;
+    auto page_hdr = reinterpret_cast<IxPageHdr *>(page.get_data());
+    page_hdr->num_key = 0;
+    page_hdr->is_leaf = true;
+    IxNodeHandle node(&file_hdr, &page);
+
+    for (int key : {5, 1, 9, 3, 7}) {
+        node.insert(reinterpret_cast<const char *>(&key), Rid{key, key});
+    }
+    int duplicate = 5;
+    node.insert(reinterpret_cast<const char *>(&duplicate), Rid{99, 99});
+    EXPECT_EQ(node.get_size(), 5);
+
+    int four = 4;
+    int five = 5;
+    EXPECT_EQ(node.lower_bound(reinterpret_cast<const char *>(&four)), 2);
+    EXPECT_EQ(node.lower_bound(reinterpret_cast<const char *>(&five)), 2);
+    EXPECT_EQ(node.upper_bound(reinterpret_cast<const char *>(&five)), 3);
+    EXPECT_EQ(node.get_rid(2)->page_no, 5);
+
+    node.remove(reinterpret_cast<const char *>(&five));
+    EXPECT_EQ(node.get_size(), 4);
+    EXPECT_EQ(node.lower_bound(reinterpret_cast<const char *>(&five)), 2);
+    EXPECT_EQ(node.get_rid(2)->page_no, 7);
+}
+
 struct MockTupleExecutorStats {
     size_t begin_count = 0;
     size_t next_count = 0;
