@@ -23,7 +23,7 @@ See the Mulan PSL v2 for more details. */
 
 class NestedLoopJoinExecutor : public AbstractExecutor {
    private:
-    static constexpr size_t DEFAULT_JOIN_BUFFER_SIZE = 8 * 1024 * 1024;
+    static constexpr size_t DEFAULT_JOIN_BUFFER_SIZE = 2ULL * 1024 * 1024 * 1024;
 
     enum class TupleSide { LEFT, RIGHT, VALUE };
 
@@ -80,7 +80,6 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         }
         cols_.insert(cols_.end(), right_cols.begin(), right_cols.end());
 
-        right_block_.reserve(right_block_capacity_ * right_len_);
         current_tuple_ = std::make_unique<RmRecord>(len_);
         bind_conditions();
     }
