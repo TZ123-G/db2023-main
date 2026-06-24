@@ -116,16 +116,28 @@ TEST(BigintTest, RawEncodingAndComparison) {
               0);
 }
 
+struct MockTupleExecutorStats {
+    size_t begin_count = 0;
+    size_t next_count = 0;
+};
+
 class MockTupleExecutor : public AbstractExecutor {
    public:
-    MockTupleExecutor(std::vector<ColMeta> cols, std::vector<RmRecord> rows)
-        : cols_(std::move(cols)), rows_(std::move(rows)) {}
+    MockTupleExecutor(std::vector<ColMeta> cols, std::vector<RmRecord> rows,
+                      std::shared_ptr<MockTupleExecutorStats> stats = nullptr)
+        : cols_(std::move(cols)),
+          rows_(std::move(rows)),
+          tuple_len_(cols_.empty() ? 0 : cols_.back().offset + cols_.back().len),
+          stats_(std::move(stats)) {}
 
-    size_t tupleLen() const override { return rows_.empty() ? 0 : rows_[0].size; }
+    size_t tupleLen() const override { return tuple_len_; }
 
     const std::vector<ColMeta> &cols() const override { return cols_; }
 
     void beginTuple() override {
+        if (stats_ != nullptr) {
+            ++stats_->begin_count;
+        }
         cursor_ = 0;
         if (!is_end()) {
             rid_ = {0, static_cast<int>(cursor_)};
@@ -135,6 +147,9 @@ class MockTupleExecutor : public AbstractExecutor {
     void nextTuple() override {
         if (is_end()) {
             return;
+        }
+        if (stats_ != nullptr) {
+            ++stats_->next_count;
         }
         ++cursor_;
         if (!is_end()) {
@@ -156,6 +171,8 @@ class MockTupleExecutor : public AbstractExecutor {
    private:
     std::vector<ColMeta> cols_;
     std::vector<RmRecord> rows_;
+    size_t tuple_len_;
+    std::shared_ptr<MockTupleExecutorStats> stats_;
     size_t cursor_ = 0;
     Rid rid_{};
 };
@@ -172,6 +189,40 @@ RmRecord make_join_record(int value) {
     RmRecord record(sizeof(int));
     memcpy(record.data, &value, sizeof(value));
     return record;
+}
+
+Condition make_column_condition(const std::string &lhs_table, const std::string &lhs_column, CompOp op,
+                                const std::string &rhs_table, const std::string &rhs_column) {
+    Condition cond;
+    cond.lhs_col = {.tab_name = lhs_table, .col_name = lhs_column};
+    cond.op = op;
+    cond.is_rhs_val = false;
+    cond.rhs_col = {.tab_name = rhs_table, .col_name = rhs_column};
+    return cond;
+}
+
+Condition make_int_value_condition(const std::string &table, const std::string &column, CompOp op, int value) {
+    Condition cond;
+    cond.lhs_col = {.tab_name = table, .col_name = column};
+    cond.op = op;
+    cond.is_rhs_val = true;
+    cond.rhs_val.set_int(value);
+    cond.rhs_val.init_raw(sizeof(int));
+    return cond;
+}
+
+std::vector<std::pair<int, int>> collect_join_pairs(AbstractExecutor &executor) {
+    std::vector<std::pair<int, int>> pairs;
+    for (executor.beginTuple(); !executor.is_end(); executor.nextTuple()) {
+        auto record = executor.Next();
+        int left_val = 0;
+        int right_val = 0;
+        memcpy(&left_val, record->data, sizeof(left_val));
+        memcpy(&right_val, record->data + sizeof(int), sizeof(right_val));
+        pairs.emplace_back(left_val, right_val);
+    }
+    std::sort(pairs.begin(), pairs.end());
+    return pairs;
 }
 
 TEST(SortExecutorTest, SupportsMultiKeyOrderByAndLimit) {
@@ -234,31 +285,160 @@ TEST(BlockNestedLoopJoinExecutorTest, SupportsMultipleBlocksAndNonEquiJoin) {
         make_join_record(4),
     };
 
-    Condition cond;
-    cond.lhs_col = {.tab_name = "t1", .col_name = "id"};
-    cond.op = OP_LT;
-    cond.is_rhs_val = false;
-    cond.rhs_col = {.tab_name = "t2", .col_name = "t_id"};
+    auto left_stats = std::make_shared<MockTupleExecutorStats>();
+    Condition cond = make_column_condition("t1", "id", OP_LT, "t2", "t_id");
 
-    NestedLoopJoinExecutor executor(std::make_unique<MockTupleExecutor>(left_cols, left_rows),
+    NestedLoopJoinExecutor executor(std::make_unique<MockTupleExecutor>(left_cols, left_rows, left_stats),
                                     std::make_unique<MockTupleExecutor>(right_cols, right_rows), {cond},
                                     sizeof(int) * 2);
-    executor.beginTuple();
 
-    std::vector<std::pair<int, int>> pairs;
-    for (; !executor.is_end(); executor.nextTuple()) {
-        auto record = executor.Next();
-        int left_val = 0;
-        int right_val = 0;
-        memcpy(&left_val, record->data, sizeof(left_val));
-        memcpy(&right_val, record->data + sizeof(int), sizeof(right_val));
-        pairs.emplace_back(left_val, right_val);
-    }
-
-    std::sort(pairs.begin(), pairs.end());
+    auto pairs = collect_join_pairs(executor);
     EXPECT_EQ(pairs, (std::vector<std::pair<int, int>>{
         {1, 2}, {1, 3}, {1, 4}, {2, 3}, {2, 4}, {3, 4},
     }));
+    EXPECT_EQ(left_stats->begin_count, 2);
+}
+
+TEST(BlockNestedLoopJoinExecutorTest, AppliesJoinAndRightValueConditionsWithoutRescanningSingleBlock) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "t_id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<RmRecord> left_rows = {
+        make_join_record(1), make_join_record(2), make_join_record(3),
+    };
+    std::vector<RmRecord> right_rows = {
+        make_join_record(2), make_join_record(999), make_join_record(1000),
+    };
+    auto left_stats = std::make_shared<MockTupleExecutorStats>();
+
+    std::vector<Condition> conds = {
+        make_column_condition("t1", "id", OP_LT, "t2", "t_id"),
+        make_int_value_condition("t2", "t_id", OP_LT, 1000),
+    };
+    NestedLoopJoinExecutor executor(std::make_unique<MockTupleExecutor>(left_cols, left_rows, left_stats),
+                                    std::make_unique<MockTupleExecutor>(right_cols, right_rows), conds, 64);
+
+    EXPECT_EQ(collect_join_pairs(executor), (std::vector<std::pair<int, int>>{
+        {1, 2}, {1, 999}, {2, 999}, {3, 999},
+    }));
+    EXPECT_EQ(left_stats->begin_count, 1);
+}
+
+TEST(BlockNestedLoopJoinExecutorTest, EmptyRightInputDoesNotScanLeftInput) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "t_id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    auto left_stats = std::make_shared<MockTupleExecutorStats>();
+    NestedLoopJoinExecutor executor(
+        std::make_unique<MockTupleExecutor>(
+            left_cols, std::vector<RmRecord>{make_join_record(1), make_join_record(2)}, left_stats),
+        std::make_unique<MockTupleExecutor>(right_cols, std::vector<RmRecord>{}), {}, 8);
+
+    executor.beginTuple();
+    EXPECT_TRUE(executor.is_end());
+    EXPECT_EQ(executor.Next(), nullptr);
+    EXPECT_EQ(left_stats->begin_count, 0);
+}
+
+TEST(BlockNestedLoopJoinExecutorTest, EmptyLeftInputStopsAfterFirstRightBlock) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "t_id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    auto right_stats = std::make_shared<MockTupleExecutorStats>();
+    NestedLoopJoinExecutor executor(
+        std::make_unique<MockTupleExecutor>(left_cols, std::vector<RmRecord>{}),
+        std::make_unique<MockTupleExecutor>(
+            right_cols,
+            std::vector<RmRecord>{make_join_record(1), make_join_record(2), make_join_record(3)},
+            right_stats),
+        {}, sizeof(int));
+
+    executor.beginTuple();
+    EXPECT_TRUE(executor.is_end());
+    EXPECT_EQ(right_stats->begin_count, 1);
+    EXPECT_EQ(right_stats->next_count, 1);
+}
+
+TEST(BlockNestedLoopJoinExecutorTest, SupportsAllComparisonOperatorsAndCartesianProduct) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "t_id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    const std::vector<std::pair<CompOp, size_t>> cases = {
+        {OP_EQ, 1}, {OP_NE, 0}, {OP_LT, 0}, {OP_GT, 0}, {OP_LE, 1}, {OP_GE, 1},
+    };
+    for (const auto &[op, expected_count] : cases) {
+        NestedLoopJoinExecutor executor(
+            std::make_unique<MockTupleExecutor>(left_cols, std::vector<RmRecord>{make_join_record(2)}),
+            std::make_unique<MockTupleExecutor>(right_cols, std::vector<RmRecord>{make_join_record(2)}),
+            {make_column_condition("t1", "id", op, "t2", "t_id")}, 4);
+        EXPECT_EQ(collect_join_pairs(executor).size(), expected_count);
+    }
+
+    NestedLoopJoinExecutor cartesian(
+        std::make_unique<MockTupleExecutor>(
+            left_cols, std::vector<RmRecord>{make_join_record(1), make_join_record(2)}),
+        std::make_unique<MockTupleExecutor>(
+            right_cols, std::vector<RmRecord>{make_join_record(3), make_join_record(4)}),
+        {}, 4);
+    EXPECT_EQ(collect_join_pairs(cartesian), (std::vector<std::pair<int, int>>{
+        {1, 3}, {1, 4}, {2, 3}, {2, 4},
+    }));
+}
+
+TEST(BlockNestedLoopJoinExecutorTest, CanBeRestartedAndNested) {
+    std::vector<ColMeta> t1_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> t2_cols = {
+        {.tab_name = "t2", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> t3_cols = {
+        {.tab_name = "t3", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+
+    auto inner = std::make_unique<NestedLoopJoinExecutor>(
+        std::make_unique<MockTupleExecutor>(
+            t1_cols, std::vector<RmRecord>{make_join_record(1), make_join_record(2)}),
+        std::make_unique<MockTupleExecutor>(
+            t2_cols, std::vector<RmRecord>{make_join_record(2), make_join_record(3)}),
+        std::vector<Condition>{make_column_condition("t1", "id", OP_LT, "t2", "id")}, 4);
+    NestedLoopJoinExecutor outer(
+        std::move(inner),
+        std::make_unique<MockTupleExecutor>(
+            t3_cols, std::vector<RmRecord>{make_join_record(3), make_join_record(4)}),
+        {make_column_condition("t2", "id", OP_LT, "t3", "id")}, 8);
+
+    auto collect_triples = [&]() {
+        std::vector<std::vector<int>> triples;
+        for (outer.beginTuple(); !outer.is_end(); outer.nextTuple()) {
+            auto record = outer.Next();
+            std::vector<int> values(3);
+            memcpy(&values[0], record->data, sizeof(int));
+            memcpy(&values[1], record->data + sizeof(int), sizeof(int));
+            memcpy(&values[2], record->data + sizeof(int) * 2, sizeof(int));
+            triples.push_back(values);
+        }
+        std::sort(triples.begin(), triples.end());
+        return triples;
+    };
+
+    const std::vector<std::vector<int>> expected = {
+        {1, 2, 3}, {1, 2, 4}, {1, 3, 4}, {2, 3, 4},
+    };
+    EXPECT_EQ(collect_triples(), expected);
+    EXPECT_EQ(collect_triples(), expected);
 }
 
 // 创建BufferPoolManager
