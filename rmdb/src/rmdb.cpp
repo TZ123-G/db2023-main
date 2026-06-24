@@ -140,7 +140,9 @@ void *client_handler(void *sock_fd) {
         };
         auto append_output = [](const std::string &line) {
             std::fstream outfile("output.txt", std::ios::out | std::ios::app);
-            outfile << line;
+            if (outfile.is_open()) {
+                outfile << line;
+            }
         };
 
         try {

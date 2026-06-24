@@ -23,7 +23,7 @@ See the Mulan PSL v2 for more details. */
 
 class NestedLoopJoinExecutor : public AbstractExecutor {
    private:
-    static constexpr size_t DEFAULT_JOIN_BUFFER_SIZE = 64 * 1024 * 1024;
+    static constexpr size_t DEFAULT_JOIN_BUFFER_SIZE = 16 * 1024 * 1024;
 
     enum class TupleSide { LEFT, RIGHT, VALUE };
 
