@@ -88,18 +88,18 @@ class AggregateExecutor : public AbstractExecutor {
         memset(result_->data, 0, len_);
         std::vector<bool> initialized(aggregates_.size(), false);
         const auto &prev_cols = prev_->cols();
-        bool has_rows = false;
 
         for (prev_->beginTuple(); !prev_->is_end(); prev_->nextTuple()) {
             auto record = prev_->Next();
             if (record == nullptr) {
                 continue;
             }
-            has_rows = true;
             for (size_t i = 0; i < aggregates_.size(); ++i) {
                 const auto &aggregate = aggregates_[i];
                 char *destination = result_->data + cols_[i].offset;
                 if (aggregate.type == AGG_COUNT) {
+                    // 当前记录格式不支持 NULL，因此 COUNT(*) 与 COUNT(valid_column)
+                    // 都统计经过 WHERE/JOIN 等上游算子过滤后的输入元组数。
                     write_value<int>(destination, read_value<int>(destination) + 1);
                     continue;
                 }
@@ -128,7 +128,8 @@ class AggregateExecutor : public AbstractExecutor {
                 }
             }
         }
-        is_end_ = !has_rows;
+        // 无分组聚合始终产生一行：空输入时 COUNT/SUM/MIN/MAX 保持初始化的零值。
+        is_end_ = false;
     }
 
     void nextTuple() override { is_end_ = true; }
