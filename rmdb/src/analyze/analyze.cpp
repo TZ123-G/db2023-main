@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
+#include "common/datetime.h"
+
 namespace {
 bool is_numeric_type(ColType type) {
     return type == TYPE_INT || type == TYPE_FLOAT;
@@ -17,6 +19,13 @@ bool is_numeric_type(ColType type) {
 
 void coerce_value_to_col_type(Value &value, ColType target_type) {
     if (value.type == target_type) {
+        return;
+    }
+    if (target_type == TYPE_DATETIME) {
+        if (value.type != TYPE_STRING) {
+            throw IncompatibleTypeError(coltype2str(target_type), coltype2str(value.type));
+        }
+        value.set_datetime(parse_datetime(value.str_val));
         return;
     }
     if (!is_numeric_type(value.type) || !is_numeric_type(target_type)) {
@@ -101,9 +110,15 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         if (!sm_manager_->db_.is_table(x->tab_name)) {
             throw TableNotFoundError(x->tab_name);
         }
+        TabMeta &tab = sm_manager_->db_.get_table(x->tab_name);
+        if (x->vals.size() != tab.cols.size()) {
+            throw InvalidValueCountError();
+        }
         // 处理insert 的values值
-        for (auto &sv_val : x->vals) {
-            query->values.push_back(convert_sv_value(sv_val));
+        for (size_t i = 0; i < x->vals.size(); ++i) {
+            Value value = convert_sv_value(x->vals[i]);
+            coerce_value_to_col_type(value, tab.cols[i].type);
+            query->values.push_back(std::move(value));
         }
     } else {
         // do nothing

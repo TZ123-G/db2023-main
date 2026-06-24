@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <cstdint>
+
 #include "ix_defs.h"
 #include "transaction/transaction.h"
 
@@ -31,6 +33,13 @@ inline int ix_compare(const char *a, const char *b, ColType type, int col_len) {
         }
         case TYPE_STRING:
             return memcmp(a, b, col_len);
+        case TYPE_DATETIME: {
+            int64_t da;
+            int64_t db;
+            memcpy(&da, a, sizeof(da));
+            memcpy(&db, b, sizeof(db));
+            return (da < db) ? -1 : ((da > db) ? 1 : 0);
+        }
         default:
             throw InternalError("Unexpected data type");
     }

@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 
 #include "execution_defs.h"
 #include "common/common.h"
@@ -105,6 +106,13 @@ class AbstractExecutor {
         if (type == TYPE_FLOAT) {
             float lhs_val = *reinterpret_cast<const float *>(lhs);
             float rhs_val = *reinterpret_cast<const float *>(rhs);
+            return (lhs_val > rhs_val) - (lhs_val < rhs_val);
+        }
+        if (type == TYPE_DATETIME) {
+            int64_t lhs_val;
+            int64_t rhs_val;
+            memcpy(&lhs_val, lhs, sizeof(lhs_val));
+            memcpy(&rhs_val, rhs, sizeof(rhs_val));
             return (lhs_val > rhs_val) - (lhs_val < rhs_val);
         }
         return memcmp(lhs, rhs, len);

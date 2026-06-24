@@ -18,6 +18,7 @@ int main() {
         "show tables;",
         "desc tb;",
         "create table tb (a int, b float, c char(4));",
+        "create table datetime_tb (time datetime);",
         "drop table tb;",
         "create index tb(a);",
         "create index tb(a, b, c);",

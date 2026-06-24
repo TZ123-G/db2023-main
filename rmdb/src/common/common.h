@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -33,6 +34,7 @@ struct Value {
     union {
         int int_val;      // int value
         float float_val;  // float value
+        int64_t datetime_val;  // datetime value encoded as YYYYMMDDHHMMSS
     };
     std::string str_val;  // string value
 
@@ -53,6 +55,11 @@ struct Value {
         str_val = std::move(str_val_);
     }
 
+    void set_datetime(int64_t datetime_val_) {
+        type = TYPE_DATETIME;
+        datetime_val = datetime_val_;
+    }
+
     void init_raw(int len) {
         assert(raw == nullptr);
         raw = std::make_shared<RmRecord>(len);
@@ -68,6 +75,9 @@ struct Value {
             }
             memset(raw->data, 0, len);
             memcpy(raw->data, str_val.c_str(), str_val.size());
+        } else if (type == TYPE_DATETIME) {
+            assert(len == sizeof(int64_t));
+            memcpy(raw->data, &datetime_val, sizeof(datetime_val));
         }
     }
 };

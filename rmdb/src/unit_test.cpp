@@ -33,6 +33,8 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "common/datetime.h"
+#include "index/ix_index_handle.h"
 #include "replacer/lru_replacer.h"
 #include "storage/disk_manager.h"
 
@@ -43,6 +45,58 @@ const std::string TEST_FILE_NAME_BIG = "bigdata";             // 测试文件的
 constexpr int MAX_FILES = 32;
 constexpr int MAX_PAGES = 128;
 constexpr size_t TEST_BUFFER_POOL_SIZE = MAX_FILES * MAX_PAGES;
+
+TEST(DatetimeTest, ParseAndFormatValidValues) {
+    std::vector<std::string> values = {
+        "1000-01-01 00:00:00",
+        "1999-07-07 12:30:00",
+        "2000-02-29 23:59:59",
+        "2024-02-29 09:12:19",
+        "9999-12-31 23:59:59",
+    };
+    for (const auto &value : values) {
+        EXPECT_EQ(format_datetime(parse_datetime(value)), value);
+    }
+}
+
+TEST(DatetimeTest, RejectInvalidValues) {
+    std::vector<std::string> values = {
+        "0999-12-31 23:59:59",
+        "10000-01-01 00:00:00",
+        "1999-13-07 12:30:00",
+        "1999-1-07 12:30:00",
+        "1999-00-07 12:30:00",
+        "1999-07-00 12:30:00",
+        "1999-04-31 12:30:00",
+        "1999-02-29 12:30:00",
+        "1900-02-29 12:30:00",
+        "2100-02-29 12:30:00",
+        "1999-02-30 12:30:00",
+        "1999-02-28 24:00:00",
+        "1999-02-28 12:60:00",
+        "1999-02-28 12:30:60",
+        "-999-07-07 12:30:00",
+        "1999/07/07 12:30:00",
+        "1999-07-07T12:30:00",
+        "1999-07-07 12-30-00",
+        "1999-07-0a 12:30:00",
+        " 1999-07-07 12:30:00",
+        "1999-07-07 12:30:00 ",
+    };
+    for (const auto &value : values) {
+        EXPECT_THROW(parse_datetime(value), RMDBError) << value;
+    }
+}
+
+TEST(DatetimeTest, EncodedValuesPreserveChronologicalOrder) {
+    int64_t earlier = parse_datetime("2023-05-18 09:12:19");
+    int64_t later = parse_datetime("2023-05-30 12:34:32");
+    EXPECT_LT(earlier, later);
+    EXPECT_LT(parse_datetime("2023-12-31 23:59:59"), parse_datetime("2024-01-01 00:00:00"));
+    EXPECT_LT(ix_compare(reinterpret_cast<const char *>(&earlier), reinterpret_cast<const char *>(&later),
+                         TYPE_DATETIME, DATETIME_LEN),
+              0);
+}
 
 // 创建BufferPoolManager
 auto disk_manager = std::make_unique<DiskManager>();
