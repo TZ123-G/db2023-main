@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "planner.h"
 
+#include <limits>
 #include <memory>
 
 #include "execution/executor_delete.h"
@@ -21,6 +22,7 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_update.h"
 #include "index/ix.h"
 #include "record_printer.h"
+#include "predicate_inference.h"
 
 bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_conds,
                              std::vector<std::string> &index_col_names) {
@@ -97,7 +99,83 @@ std::shared_ptr<Plan> pop_scan(int *scantbl, std::string table, std::vector<std:
 }
 
 std::shared_ptr<Query> Planner::logical_optimization(std::shared_ptr<Query> query, Context *context) {
+    query->conds = predicate_inference::infer(query->conds);
     return query;
+}
+
+bool Planner::plan_contains_column(const std::shared_ptr<Plan> &plan, const TabCol &column) const {
+    if (auto scan = std::dynamic_pointer_cast<ScanPlan>(plan)) {
+        return scan->tab_name_ == column.tab_name &&
+               std::any_of(scan->cols_.begin(), scan->cols_.end(),
+                           [&](const ColMeta &col) { return col.name == column.col_name; });
+    }
+    if (auto join = std::dynamic_pointer_cast<JoinPlan>(plan)) {
+        return plan_contains_column(join->left_, column) || plan_contains_column(join->right_, column);
+    }
+    return false;
+}
+
+size_t Planner::estimate_plan_rows(const std::shared_ptr<Plan> &plan) const {
+    if (auto scan = std::dynamic_pointer_cast<ScanPlan>(plan)) {
+        auto file = sm_manager_->fhs_.find(scan->tab_name_);
+        if (file == sm_manager_->fhs_.end()) {
+            return std::numeric_limits<size_t>::max();
+        }
+        const auto header = file->second->get_file_hdr();
+        size_t data_pages = header.num_pages > RM_FIRST_RECORD_PAGE
+                                ? static_cast<size_t>(header.num_pages - RM_FIRST_RECORD_PAGE)
+                                : 0;
+        return data_pages * static_cast<size_t>(header.num_records_per_page);
+    }
+    if (auto join = std::dynamic_pointer_cast<JoinPlan>(plan)) {
+        size_t left = estimate_plan_rows(join->left_);
+        size_t right = estimate_plan_rows(join->right_);
+        if (left == 0 || right == 0) {
+            return 0;
+        }
+        if (left > std::numeric_limits<size_t>::max() / right) {
+            return std::numeric_limits<size_t>::max();
+        }
+        return left * right;
+    }
+    return std::numeric_limits<size_t>::max();
+}
+
+std::shared_ptr<Plan> Planner::make_join_plan(std::shared_ptr<Plan> left, std::shared_ptr<Plan> right,
+                                              std::vector<Condition> conds) {
+    bool has_hash_key = std::any_of(conds.begin(), conds.end(), [&](const Condition &cond) {
+        if (cond.is_rhs_val || cond.op != OP_EQ) {
+            return false;
+        }
+        bool lhs_left = plan_contains_column(left, cond.lhs_col);
+        bool lhs_right = plan_contains_column(right, cond.lhs_col);
+        bool rhs_left = plan_contains_column(left, cond.rhs_col);
+        bool rhs_right = plan_contains_column(right, cond.rhs_col);
+        return (lhs_left && rhs_right) || (lhs_right && rhs_left);
+    });
+    bool build_left = has_hash_key && estimate_plan_rows(left) <= estimate_plan_rows(right);
+    return std::make_shared<JoinPlan>(has_hash_key ? T_HashJoin : T_NestLoop, std::move(left),
+                                      std::move(right), std::move(conds), build_left);
+}
+
+void Planner::select_hash_joins(const std::shared_ptr<Plan> &plan) {
+    auto join = std::dynamic_pointer_cast<JoinPlan>(plan);
+    if (join == nullptr) {
+        return;
+    }
+    select_hash_joins(join->left_);
+    select_hash_joins(join->right_);
+    bool has_hash_key = std::any_of(join->conds_.begin(), join->conds_.end(), [&](const Condition &cond) {
+        if (cond.is_rhs_val || cond.op != OP_EQ) {
+            return false;
+        }
+        return (plan_contains_column(join->left_, cond.lhs_col) &&
+                plan_contains_column(join->right_, cond.rhs_col)) ||
+               (plan_contains_column(join->right_, cond.lhs_col) &&
+                plan_contains_column(join->left_, cond.rhs_col));
+    });
+    join->tag = has_hash_key ? T_HashJoin : T_NestLoop;
+    join->build_left_ = has_hash_key && estimate_plan_rows(join->left_) <= estimate_plan_rows(join->right_);
 }
 
 std::shared_ptr<Plan> Planner::physical_optimization(std::shared_ptr<Query> query, Context *context) {
@@ -134,7 +212,7 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query) {
             std::shared_ptr<Plan> left = pop_scan(scantbl, it->lhs_col.tab_name, joined_tables, table_scan_executors);
             std::shared_ptr<Plan> right = pop_scan(scantbl, it->rhs_col.tab_name, joined_tables, table_scan_executors);
             std::vector<Condition> join_conds{*it};
-            table_join_executors = std::make_shared<JoinPlan>(T_NestLoop, std::move(left), std::move(right), join_conds);
+            table_join_executors = make_join_plan(std::move(left), std::move(right), std::move(join_conds));
             it = conds.erase(it);
             break;
         }
@@ -156,12 +234,11 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query) {
 
             if (left_need_to_join_executors != nullptr && right_need_to_join_executors != nullptr) {
                 std::vector<Condition> join_conds{*it};
-                std::shared_ptr<Plan> temp_join_executors = std::make_shared<JoinPlan>(
-                    T_NestLoop, std::move(left_need_to_join_executors), std::move(right_need_to_join_executors),
-                    join_conds);
-                table_join_executors = std::make_shared<JoinPlan>(
-                    T_NestLoop, std::move(temp_join_executors), std::move(table_join_executors),
-                    std::vector<Condition>());
+                std::shared_ptr<Plan> temp_join_executors =
+                    make_join_plan(std::move(left_need_to_join_executors),
+                                   std::move(right_need_to_join_executors), std::move(join_conds));
+                table_join_executors = make_join_plan(
+                    std::move(temp_join_executors), std::move(table_join_executors), std::vector<Condition>());
             } else if (left_need_to_join_executors != nullptr || right_need_to_join_executors != nullptr) {
                 if (isneedreverse) {
                     std::map<CompOp, CompOp> swap_op = {
@@ -172,8 +249,9 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query) {
                     left_need_to_join_executors = std::move(right_need_to_join_executors);
                 }
                 std::vector<Condition> join_conds{*it};
-                table_join_executors = std::make_shared<JoinPlan>(
-                    T_NestLoop, std::move(left_need_to_join_executors), std::move(table_join_executors), join_conds);
+                table_join_executors =
+                    make_join_plan(std::move(left_need_to_join_executors),
+                                   std::move(table_join_executors), std::move(join_conds));
             } else {
                 push_conds(std::move(&(*it)), table_join_executors);
             }
@@ -186,12 +264,13 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query) {
 
     for (size_t i = 0; i < tables.size(); i++) {
         if (scantbl[i] == -1) {
-            table_join_executors = std::make_shared<JoinPlan>(
-                T_NestLoop, std::move(table_join_executors), std::move(table_scan_executors[i]),
-                std::vector<Condition>());
+            table_join_executors =
+                make_join_plan(std::move(table_join_executors), std::move(table_scan_executors[i]),
+                               std::vector<Condition>());
         }
     }
 
+    select_hash_joins(table_join_executors);
     return table_join_executors;
 }
 

@@ -41,6 +41,7 @@ typedef enum PlanTag {
     T_SeqScan,
     T_IndexScan,
     T_NestLoop,
+    T_HashJoin,
     T_Sort,
     T_Projection,
     T_Aggregate
@@ -77,11 +78,13 @@ class ScanPlan : public Plan {
 
 class JoinPlan : public Plan {
    public:
-    JoinPlan(PlanTag tag, std::shared_ptr<Plan> left, std::shared_ptr<Plan> right, std::vector<Condition> conds) {
+    JoinPlan(PlanTag tag, std::shared_ptr<Plan> left, std::shared_ptr<Plan> right, std::vector<Condition> conds,
+             bool build_left = false) {
         Plan::tag = tag;
         left_ = std::move(left);
         right_ = std::move(right);
         conds_ = std::move(conds);
+        build_left_ = build_left;
         type = INNER_JOIN;
     }
     ~JoinPlan() {}
@@ -89,6 +92,7 @@ class JoinPlan : public Plan {
     std::shared_ptr<Plan> left_;
     std::shared_ptr<Plan> right_;
     std::vector<Condition> conds_;
+    bool build_left_;
     JoinType type;
 };
 

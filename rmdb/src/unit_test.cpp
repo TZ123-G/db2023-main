@@ -34,9 +34,11 @@ See the Mulan PSL v2 for more details. */
 
 #include "gtest/gtest.h"
 #include "common/datetime.h"
+#include "execution/executor_hash_join.h"
 #include "execution/executor_nestedloop_join.h"
 #include "execution/execution_sort.h"
 #include "index/ix_index_handle.h"
+#include "optimizer/predicate_inference.h"
 #include "replacer/lru_replacer.h"
 #include "storage/disk_manager.h"
 
@@ -191,6 +193,13 @@ RmRecord make_join_record(int value) {
     return record;
 }
 
+RmRecord make_two_int_record(int first, int second) {
+    RmRecord record(sizeof(int) * 2);
+    memcpy(record.data, &first, sizeof(first));
+    memcpy(record.data + sizeof(int), &second, sizeof(second));
+    return record;
+}
+
 Condition make_column_condition(const std::string &lhs_table, const std::string &lhs_column, CompOp op,
                                 const std::string &rhs_table, const std::string &rhs_column) {
     Condition cond;
@@ -223,6 +232,219 @@ std::vector<std::pair<int, int>> collect_join_pairs(AbstractExecutor &executor) 
     }
     std::sort(pairs.begin(), pairs.end());
     return pairs;
+}
+
+bool has_int_condition(const std::vector<Condition> &conditions, const std::string &table,
+                       const std::string &column, CompOp op, int value) {
+    return std::any_of(conditions.begin(), conditions.end(), [&](const Condition &condition) {
+        if (!condition.is_rhs_val || condition.lhs_col.tab_name != table ||
+            condition.lhs_col.col_name != column || condition.op != op ||
+            condition.rhs_val.type != TYPE_INT) {
+            return false;
+        }
+        int actual = 0;
+        memcpy(&actual, condition.rhs_val.raw->data, sizeof(actual));
+        return actual == value;
+    });
+}
+
+TEST(PredicateInferenceTest, PropagatesBoundsAcrossColumnRelations) {
+    std::vector<Condition> conditions = {
+        make_column_condition("t1", "a", OP_LT, "t2", "b"),
+        make_column_condition("t2", "b", OP_LE, "t3", "c"),
+        make_int_value_condition("t3", "c", OP_LT, 1000),
+    };
+
+    auto inferred = predicate_inference::infer(conditions);
+    EXPECT_TRUE(has_int_condition(inferred, "t2", "b", OP_LT, 1000));
+    EXPECT_TRUE(has_int_condition(inferred, "t1", "a", OP_LT, 1000));
+}
+
+TEST(PredicateInferenceTest, PropagatesEqualityAndLowerBoundsWithoutDuplicates) {
+    std::vector<Condition> conditions = {
+        make_column_condition("t1", "a", OP_EQ, "t2", "b"),
+        make_column_condition("t2", "b", OP_LT, "t3", "c"),
+        make_int_value_condition("t1", "a", OP_GE, 10),
+        make_int_value_condition("t1", "a", OP_NE, 20),
+    };
+
+    auto inferred = predicate_inference::infer(conditions);
+    EXPECT_TRUE(has_int_condition(inferred, "t2", "b", OP_GE, 10));
+    EXPECT_TRUE(has_int_condition(inferred, "t3", "c", OP_GT, 10));
+    EXPECT_TRUE(has_int_condition(inferred, "t2", "b", OP_NE, 20));
+
+    std::set<std::string> unique;
+    for (const auto &condition : inferred) {
+        EXPECT_TRUE(unique.insert(predicate_inference::condition_key(condition)).second);
+    }
+}
+
+TEST(HashJoinExecutorTest, SupportsDuplicateKeysAndResidualConditions) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<RmRecord> left_rows = {
+        make_join_record(1), make_join_record(2), make_join_record(2), make_join_record(3),
+    };
+    std::vector<RmRecord> right_rows = {
+        make_join_record(2), make_join_record(2), make_join_record(3), make_join_record(4),
+    };
+    std::vector<Condition> conditions = {
+        make_column_condition("t1", "id", OP_EQ, "t2", "id"),
+        make_int_value_condition("t2", "id", OP_LT, 4),
+    };
+
+    HashJoinExecutor executor(
+        std::make_unique<MockTupleExecutor>(left_cols, left_rows),
+        std::make_unique<MockTupleExecutor>(right_cols, right_rows), conditions, true, 4096);
+    EXPECT_EQ(collect_join_pairs(executor), (std::vector<std::pair<int, int>>{
+        {2, 2}, {2, 2}, {2, 2}, {2, 2}, {3, 3},
+    }));
+    EXPECT_FALSE(executor.usingFallback());
+}
+
+TEST(HashJoinExecutorTest, SupportsCompositeKeysAndEitherBuildSide) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "a", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+        {.tab_name = "t1", .name = "b", .type = TYPE_INT, .len = 4, .offset = 4, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "x", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+        {.tab_name = "t2", .name = "y", .type = TYPE_INT, .len = 4, .offset = 4, .index = false},
+    };
+    std::vector<RmRecord> left_rows = {
+        make_two_int_record(1, 10), make_two_int_record(1, 20), make_two_int_record(2, 10),
+    };
+    std::vector<RmRecord> right_rows = {
+        make_two_int_record(1, 10), make_two_int_record(1, 30), make_two_int_record(2, 10),
+    };
+    std::vector<Condition> conditions = {
+        make_column_condition("t1", "a", OP_EQ, "t2", "x"),
+        make_column_condition("t2", "y", OP_EQ, "t1", "b"),
+    };
+
+    for (bool build_left : {false, true}) {
+        HashJoinExecutor executor(
+            std::make_unique<MockTupleExecutor>(left_cols, left_rows),
+            std::make_unique<MockTupleExecutor>(right_cols, right_rows), conditions, build_left, 4096);
+        for (int run = 0; run < 2; ++run) {
+            size_t count = 0;
+            for (executor.beginTuple(); !executor.is_end(); executor.nextTuple()) {
+                auto record = executor.Next();
+                ASSERT_NE(record, nullptr);
+                ++count;
+            }
+            EXPECT_EQ(count, 2);
+        }
+    }
+}
+
+TEST(HashJoinExecutorTest, NormalizesFloatingPointZeroKeys) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "value", .type = TYPE_FLOAT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "value", .type = TYPE_FLOAT, .len = 4, .offset = 0, .index = false},
+    };
+    auto make_float_record = [](float value) {
+        RmRecord record(sizeof(float));
+        memcpy(record.data, &value, sizeof(value));
+        return record;
+    };
+    HashJoinExecutor executor(
+        std::make_unique<MockTupleExecutor>(
+            left_cols, std::vector<RmRecord>{make_float_record(-0.0F)}),
+        std::make_unique<MockTupleExecutor>(
+            right_cols, std::vector<RmRecord>{make_float_record(0.0F)}),
+        std::vector<Condition>{make_column_condition("t1", "value", OP_EQ, "t2", "value")},
+        true, 1024);
+
+    executor.beginTuple();
+    ASSERT_FALSE(executor.is_end());
+    EXPECT_NE(executor.Next(), nullptr);
+    executor.nextTuple();
+    EXPECT_TRUE(executor.is_end());
+}
+
+TEST(HashJoinExecutorTest, SupportsAllHashableColumnTypesInCompositeKeys) {
+    constexpr int BIGINT_OFFSET = 0;
+    constexpr int FLOAT_OFFSET = BIGINT_OFFSET + sizeof(int64_t);
+    constexpr int STRING_OFFSET = FLOAT_OFFSET + sizeof(float);
+    constexpr int DATETIME_OFFSET = STRING_OFFSET + 8;
+    constexpr int RECORD_SIZE = DATETIME_OFFSET + sizeof(int64_t);
+    auto columns = [=](const std::string &table) {
+        return std::vector<ColMeta>{
+            {.tab_name = table, .name = "big", .type = TYPE_BIGINT, .len = 8,
+             .offset = BIGINT_OFFSET, .index = false},
+            {.tab_name = table, .name = "ratio", .type = TYPE_FLOAT, .len = 4,
+             .offset = FLOAT_OFFSET, .index = false},
+            {.tab_name = table, .name = "name", .type = TYPE_STRING, .len = 8,
+             .offset = STRING_OFFSET, .index = false},
+            {.tab_name = table, .name = "created", .type = TYPE_DATETIME, .len = 8,
+             .offset = DATETIME_OFFSET, .index = false},
+        };
+    };
+    auto record = [=](int64_t big, float ratio, const std::string &name, int64_t datetime) {
+        RmRecord result(RECORD_SIZE);
+        memset(result.data, 0, result.size);
+        memcpy(result.data + BIGINT_OFFSET, &big, sizeof(big));
+        memcpy(result.data + FLOAT_OFFSET, &ratio, sizeof(ratio));
+        memcpy(result.data + STRING_OFFSET, name.data(), std::min<size_t>(name.size(), 8));
+        memcpy(result.data + DATETIME_OFFSET, &datetime, sizeof(datetime));
+        return result;
+    };
+    std::vector<Condition> conditions;
+    for (const auto &name : {"big", "ratio", "name", "created"}) {
+        conditions.push_back(make_column_condition("t1", name, OP_EQ, "t2", name));
+    }
+    const int64_t timestamp = parse_datetime("2025-06-24 12:30:00");
+    HashJoinExecutor executor(
+        std::make_unique<MockTupleExecutor>(
+            columns("t1"), std::vector<RmRecord>{record(7, 1.5F, "alpha", timestamp)}),
+        std::make_unique<MockTupleExecutor>(
+            columns("t2"), std::vector<RmRecord>{
+                               record(7, 1.5F, "alpha", timestamp),
+                               record(7, 1.5F, "beta", timestamp),
+                           }),
+        conditions, false, 4096);
+
+    executor.beginTuple();
+    ASSERT_FALSE(executor.is_end());
+    EXPECT_NE(executor.Next(), nullptr);
+    executor.nextTuple();
+    EXPECT_TRUE(executor.is_end());
+}
+
+TEST(HashJoinExecutorTest, FallsBackWhenFixedMemoryCannotHoldHashTable) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    HashJoinExecutor executor(
+        std::make_unique<MockTupleExecutor>(
+            left_cols, std::vector<RmRecord>{make_join_record(1), make_join_record(2)}),
+        std::make_unique<MockTupleExecutor>(
+            right_cols, std::vector<RmRecord>{make_join_record(2), make_join_record(3)}),
+        std::vector<Condition>{make_column_condition("t1", "id", OP_EQ, "t2", "id")},
+        true, 1);
+
+    executor.beginTuple();
+    EXPECT_TRUE(executor.usingFallback());
+    std::vector<std::pair<int, int>> pairs;
+    for (; !executor.is_end(); executor.nextTuple()) {
+        auto record = executor.Next();
+        int left = 0;
+        int right = 0;
+        memcpy(&left, record->data, sizeof(left));
+        memcpy(&right, record->data + sizeof(left), sizeof(right));
+        pairs.emplace_back(left, right);
+    }
+    EXPECT_EQ(pairs, (std::vector<std::pair<int, int>>{{2, 2}}));
 }
 
 TEST(SortExecutorTest, SupportsMultiKeyOrderByAndLimit) {

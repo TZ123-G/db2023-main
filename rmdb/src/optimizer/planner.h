@@ -39,6 +39,11 @@ class Planner {
     std::shared_ptr<Query> logical_optimization(std::shared_ptr<Query> query, Context *context);
     std::shared_ptr<Plan> physical_optimization(std::shared_ptr<Query> query, Context *context);
     std::shared_ptr<Plan> make_one_rel(std::shared_ptr<Query> query);
+    std::shared_ptr<Plan> make_join_plan(std::shared_ptr<Plan> left, std::shared_ptr<Plan> right,
+                                         std::vector<Condition> conds);
+    void select_hash_joins(const std::shared_ptr<Plan> &plan);
+    bool plan_contains_column(const std::shared_ptr<Plan> &plan, const TabCol &column) const;
+    size_t estimate_plan_rows(const std::shared_ptr<Plan> &plan) const;
     std::shared_ptr<Plan> generate_sort_plan(std::shared_ptr<Query> query, std::shared_ptr<Plan> plan);
     std::shared_ptr<Plan> generate_select_plan(std::shared_ptr<Query> query, Context *context);
     bool get_index_cols(std::string tab_name, std::vector<Condition> curr_conds,
