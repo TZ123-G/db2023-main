@@ -1,6 +1,5 @@
 %{
 #include "ast.h"
-#include "common/common.h"
 #include "errors.h"
 #include "yacc.tab.h"
 #include <iostream>

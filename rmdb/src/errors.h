@@ -149,6 +149,23 @@ class NumericOverflowError : public RMDBError {
         : RMDBError("Numeric value out of range for " + target_type + ": " + value) {}
 };
 
+// Parse a decimal integer string as long long.
+// Throws NumericOverflowError if the string is not a valid integer or overflows long long.
+inline long long parse_strict_integer(const std::string &literal, const std::string &context) {
+    try {
+        size_t idx = 0;
+        long long value = std::stoll(literal, &idx, 10);
+        if (idx != literal.size()) {
+            throw NumericOverflowError(literal, context);
+        }
+        return value;
+    } catch (const std::invalid_argument &) {
+        throw NumericOverflowError(literal, context);
+    } catch (const std::out_of_range &) {
+        throw NumericOverflowError(literal, context);
+    }
+}
+
 class IncompatibleTypeError : public RMDBError {
    public:
     IncompatibleTypeError(const std::string &lhs, const std::string &rhs)

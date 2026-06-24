@@ -121,7 +121,28 @@ void *client_handler(void *sock_fd) {
         pthread_mutex_lock(buffer_mutex);
         YY_BUFFER_STATE buf = yy_scan_string(data_recv);
         ast::parse_tree = nullptr;
-        int parse_rc = yyparse();
+        int parse_rc;
+        try {
+            parse_rc = yyparse();
+        } catch (RMDBError &e) {
+            std::cerr << e.what() << std::endl;
+            memcpy(data_send, e.what(), e.get_msg_len());
+            data_send[e.get_msg_len()] = '\n';
+            data_send[e.get_msg_len() + 1] = '\0';
+            offset = e.get_msg_len() + 1;
+
+            std::fstream outfile;
+            outfile.open("output.txt", std::ios::out | std::ios::app);
+            outfile << "failure\n";
+            outfile.close();
+
+            yy_delete_buffer(buf);
+            pthread_mutex_unlock(buffer_mutex);
+            if (write(fd, data_send, offset + 1) == -1) {
+                break;
+            }
+            continue;
+        }
         if (parse_rc == 0 && ast::parse_tree != nullptr) {
             if (ast::parse_tree != nullptr) {
                 try {

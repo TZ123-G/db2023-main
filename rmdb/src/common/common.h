@@ -125,20 +125,3 @@ struct SetClause {
     TabCol lhs;
     Value rhs;
 };
-
-// Parse a decimal integer string as int64_t.
-// Throws NumericOverflowError if the string is not a valid integer or overflows int64_t.
-inline int64_t parse_strict_integer(const std::string &literal, const std::string &context) {
-    try {
-        size_t idx = 0;
-        long long value = std::stoll(literal, &idx, 10);
-        if (idx != literal.size()) {
-            throw NumericOverflowError(literal, context);
-        }
-        return static_cast<int64_t>(value);
-    } catch (const std::invalid_argument &) {
-        throw NumericOverflowError(literal, context);
-    } catch (const std::out_of_range &) {
-        throw NumericOverflowError(literal, context);
-    }
-}
