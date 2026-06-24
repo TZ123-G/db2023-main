@@ -27,6 +27,7 @@ class SeqScanExecutor : public AbstractExecutor {
 
     Rid rid_;
     std::unique_ptr<RecScan> scan_;     // table_iterator
+    std::unique_ptr<RmRecord> current_record_;
 
     SmManager *sm_manager_;
 
@@ -53,6 +54,7 @@ class SeqScanExecutor : public AbstractExecutor {
 
     void beginTuple() override {
         scan_ = std::make_unique<RmScan>(fh_);
+        current_record_.reset();
         skip_unmatched();
     }
 
@@ -60,6 +62,7 @@ class SeqScanExecutor : public AbstractExecutor {
         if (is_end()) {
             return;
         }
+        current_record_.reset();
         scan_->next();
         skip_unmatched();
     }
@@ -68,7 +71,7 @@ class SeqScanExecutor : public AbstractExecutor {
         if (is_end()) {
             return nullptr;
         }
-        return fh_->get_record(rid_, context_);
+        return std::make_unique<RmRecord>(*current_record_);
     }
 
     Rid &rid() override { return rid_; }
@@ -79,9 +82,11 @@ class SeqScanExecutor : public AbstractExecutor {
             rid_ = scan_->rid();
             auto rec = fh_->get_record(rid_, context_);
             if (eval_conds(cols_, rec.get(), fed_conds_)) {
+                current_record_ = std::move(rec);
                 return;
             }
             scan_->next();
         }
+        current_record_.reset();
     }
 };

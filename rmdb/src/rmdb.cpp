@@ -286,6 +286,7 @@ int main(int argc, char **argv) {
     }
 
     signal(SIGINT, sigint_handler);
+    signal(SIGPIPE, SIG_IGN);
     try {
         std::cout << "\n"
                      "  _____  __  __ _____  ____  \n"
