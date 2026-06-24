@@ -299,6 +299,31 @@ TEST(BlockNestedLoopJoinExecutorTest, SupportsMultipleBlocksAndNonEquiJoin) {
     EXPECT_EQ(left_stats->begin_count, 2);
 }
 
+TEST(BlockNestedLoopJoinExecutorTest, ClampsJoinBufferToSafeBounds) {
+    std::vector<ColMeta> left_cols = {
+        {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+    std::vector<ColMeta> right_cols = {
+        {.tab_name = "t2", .name = "t_id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},
+    };
+
+    NestedLoopJoinExecutor too_small(
+        std::make_unique<MockTupleExecutor>(left_cols, std::vector<RmRecord>{make_join_record(1)}),
+        std::make_unique<MockTupleExecutor>(right_cols, std::vector<RmRecord>{make_join_record(1)}),
+        {}, 1);
+    EXPECT_EQ(too_small.joinBufferSize(), sizeof(int));
+    EXPECT_EQ(too_small.rightBlockCapacity(), 1);
+    EXPECT_FALSE(too_small.isJoinBufferAllocated());
+
+    NestedLoopJoinExecutor too_large(
+        std::make_unique<MockTupleExecutor>(left_cols, std::vector<RmRecord>{make_join_record(1)}),
+        std::make_unique<MockTupleExecutor>(right_cols, std::vector<RmRecord>{make_join_record(1)}),
+        {}, 128ULL * 1024 * 1024);
+    EXPECT_EQ(too_large.joinBufferSize(), 64ULL * 1024 * 1024);
+    EXPECT_EQ(too_large.rightBlockCapacity(), 64ULL * 1024 * 1024 / sizeof(int));
+    EXPECT_FALSE(too_large.isJoinBufferAllocated());
+}
+
 TEST(BlockNestedLoopJoinExecutorTest, AppliesJoinAndRightValueConditionsWithoutRescanningSingleBlock) {
     std::vector<ColMeta> left_cols = {
         {.tab_name = "t1", .name = "id", .type = TYPE_INT, .len = 4, .offset = 0, .index = false},

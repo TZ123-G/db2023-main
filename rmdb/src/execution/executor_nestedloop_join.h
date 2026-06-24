@@ -23,7 +23,7 @@ See the Mulan PSL v2 for more details. */
 
 class NestedLoopJoinExecutor : public AbstractExecutor {
    private:
-    static constexpr size_t DEFAULT_JOIN_BUFFER_SIZE = 2ULL * 1024 * 1024 * 1024;
+    static constexpr size_t DEFAULT_JOIN_BUFFER_SIZE = 64 * 1024 * 1024;
 
     enum class TupleSide { LEFT, RIGHT, VALUE };
 
@@ -52,7 +52,7 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     size_t join_buffer_size_;
     size_t right_block_capacity_;
-    std::vector<char> right_block_;
+    std::unique_ptr<char[]> right_block_;
     size_t right_block_count_ = 0;
     bool right_exhausted_ = false;
 
@@ -71,7 +71,9 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
           right_len_(right_->tupleLen()),
           len_(left_len_ + right_len_),
           fed_conds_(std::move(conds)),
-          join_buffer_size_(std::max<size_t>(join_buffer_size, std::max<size_t>(1, right_len_))),
+          join_buffer_size_(
+              std::min(DEFAULT_JOIN_BUFFER_SIZE,
+                       std::max(join_buffer_size, std::max<size_t>(1, right_len_)))),
           right_block_capacity_(std::max<size_t>(1, join_buffer_size_ / std::max<size_t>(1, right_len_))) {
         cols_ = left_->cols();
         auto right_cols = right_->cols();
@@ -90,8 +92,16 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     bool is_end() const override { return is_end_; }
 
+    size_t joinBufferSize() const { return join_buffer_size_; }
+
+    size_t rightBlockCapacity() const { return right_block_capacity_; }
+
+    bool isJoinBufferAllocated() const { return right_block_ != nullptr; }
+
     void beginTuple() override {
-        right_block_.clear();
+        if (right_block_ == nullptr) {
+            right_block_ = std::make_unique<char[]>(right_block_capacity_ * right_len_);
+        }
         right_block_count_ = 0;
         right_block_pos_ = 0;
         right_exhausted_ = false;
@@ -210,16 +220,13 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     }
 
     bool load_right_block() {
-        right_block_.clear();
         right_block_count_ = 0;
         right_block_pos_ = 0;
 
         while (!right_->is_end() && right_block_count_ < right_block_capacity_) {
             auto rec = right_->Next();
             if (rec != nullptr) {
-                size_t old_size = right_block_.size();
-                right_block_.resize(old_size + right_len_);
-                memcpy(right_block_.data() + old_size, rec->data, right_len_);
+                memcpy(right_block_.get() + right_block_count_ * right_len_, rec->data, right_len_);
                 ++right_block_count_;
             }
             right_->nextTuple();
@@ -273,7 +280,7 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
             }
 
             while (right_block_pos_ < right_block_count_) {
-                const char *right_rec = right_block_.data() + right_block_pos_ * right_len_;
+                const char *right_rec = right_block_.get() + right_block_pos_ * right_len_;
                 ++right_block_pos_;
                 if (eval_join_conditions(current_left_.get(), right_rec)) {
                     write_current_tuple(current_left_.get(), right_rec);
