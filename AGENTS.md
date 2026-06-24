@@ -64,6 +64,15 @@
 
 Agent 不要自行执行 CMake 配置、构建或相关测试；仅在用户明确要求时运行。
 
+## Server Failed 排查经验
+
+- 服务端入口 `client_handler` 应把 SQL 解析、语义分析、计划生成和执行放在统一的异常边界内。解析阶段调用的 `std::stoll` 等函数也可能抛出异常，不能只捕获执行阶段错误，否则异常逃逸会直接导致连接线程或服务端失败。
+- parser 的 `buffer_mutex` 和 `YY_BUFFER_STATE` 必须在成功、语法错误、RMDB 异常、事务中止及标准库异常等所有路径中各清理一次。优先使用统一、幂等的清理逻辑，避免分支中的漏解锁、重复 `yy_delete_buffer` 和死锁。
+- 单语句隐式事务只有在请求完整成功后才能自动提交；任一阶段失败都应回滚。`TransactionAbortException` 已执行回滚时要记录状态，避免二次 abort。
+- 错误响应写入 `data_send` 时必须按 `BUFFER_LENGTH` 截断并正确维护终止符和 `offset`；同时按评测约定向 `output.txt` 写入 `failure` 或 `abort`。
+- 请求级 `Context` 优先使用作用域对象，连接结束时释放动态响应缓冲区。修复 Server Failed 时应同时检查异常生命周期、parser 资源、事务状态和 socket 响应，不能只在报错点增加一个 `catch`。
+- parser 动作需要的通用错误与严格整数解析逻辑应放在 `errors.h` 等低依赖公共位置，避免为使用一个辅助函数引入 `common/common.h` 形成不必要的包含耦合；修改 `yacc.y` 后应保持生成的 parser 文件一致。
+
 ## 禁止事项
 
 - 不要随意修改比赛 PDF、说明文档附件、第三方依赖、生成文件和无关 `.DS_Store`。
