@@ -1,5 +1,6 @@
 %{
 #include "ast.h"
+#include "common/common.h"
 #include "errors.h"
 #include "yacc.tab.h"
 #include <iostream>
@@ -13,36 +14,6 @@ void yyerror(YYLTYPE *locp, const char* s) {
 }
 
 using namespace ast;
-
-int parse_positive_int_literal(const std::string &literal, const std::string &context_name) {
-    try {
-        size_t idx = 0;
-        long long value = std::stoll(literal, &idx, 10);
-        if (idx != literal.size() || value <= 0 || value > std::numeric_limits<int>::max()) {
-            throw NumericOverflowError(literal, context_name);
-        }
-        return static_cast<int>(value);
-    } catch (const std::invalid_argument &) {
-        throw NumericOverflowError(literal, context_name);
-    } catch (const std::out_of_range &) {
-        throw NumericOverflowError(literal, context_name);
-    }
-}
-
-int64_t parse_non_negative_bigint_literal(const std::string &literal, const std::string &context_name) {
-    try {
-        size_t idx = 0;
-        long long value = std::stoll(literal, &idx, 10);
-        if (idx != literal.size() || value < 0) {
-            throw NumericOverflowError(literal, context_name);
-        }
-        return static_cast<int64_t>(value);
-    } catch (const std::invalid_argument &) {
-        throw NumericOverflowError(literal, context_name);
-    } catch (const std::out_of_range &) {
-        throw NumericOverflowError(literal, context_name);
-    }
-}
 %}
 
 // request a pure (reentrant) parser
@@ -228,7 +199,11 @@ type:
     }
     |   CHAR '(' VALUE_INT ')'
     {
-        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, parse_positive_int_literal($3, "CHAR"));
+        int64_t n = parse_strict_integer($3, "CHAR");
+        if (n <= 0 || n > std::numeric_limits<int>::max()) {
+            throw NumericOverflowError($3, "CHAR");
+        }
+        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, static_cast<int>(n));
     }
     |   FLOAT
     {
@@ -454,7 +429,11 @@ order_item:
 opt_limit_clause:
     LIMIT VALUE_INT
     {
-        $$ = parse_non_negative_bigint_literal($2, "LIMIT");
+        int64_t n = parse_strict_integer($2, "LIMIT");
+        if (n < 0) {
+            throw NumericOverflowError($2, "LIMIT");
+        }
+        $$ = n;
     }
     | /* epsilon */
     {

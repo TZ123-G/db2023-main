@@ -23,21 +23,6 @@ bool is_numeric_type(ColType type) {
     return is_integer_type(type) || type == TYPE_FLOAT;
 }
 
-int64_t parse_integer_literal(const std::string &literal) {
-    try {
-        size_t idx = 0;
-        long long value = std::stoll(literal, &idx, 10);
-        if (idx != literal.size()) {
-            throw NumericOverflowError(literal, "BIGINT");
-        }
-        return static_cast<int64_t>(value);
-    } catch (const std::invalid_argument &) {
-        throw NumericOverflowError(literal, "BIGINT");
-    } catch (const std::out_of_range &) {
-        throw NumericOverflowError(literal, "BIGINT");
-    }
-}
-
 template <typename T, typename U>
 void ensure_numeric_range(U value, const std::string &literal, ColType target_type) {
     if (value < static_cast<U>(std::numeric_limits<T>::lowest()) ||
@@ -308,7 +293,7 @@ void Analyze::check_clause(const std::vector<std::string> &tab_names, std::vecto
 Value Analyze::convert_sv_value(const std::shared_ptr<ast::Value> &sv_val) {
     Value val;
     if (auto int_lit = std::dynamic_pointer_cast<ast::IntLit>(sv_val)) {
-        int64_t literal = parse_integer_literal(int_lit->val);
+        int64_t literal = parse_strict_integer(int_lit->val, "BIGINT");
         if (literal >= std::numeric_limits<int>::lowest() && literal <= std::numeric_limits<int>::max()) {
             val.set_int(static_cast<int>(literal));
         } else {

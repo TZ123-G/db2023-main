@@ -118,9 +118,11 @@ class AggregateExecutor : public AbstractExecutor {
                     } else if (source_col.type == TYPE_BIGINT) {
                         write_value<int64_t>(destination,
                                              read_value<int64_t>(destination) + read_value<int64_t>(source));
-                    } else {
+                    } else if (source_col.type == TYPE_FLOAT) {
                         write_value<float>(destination,
                                            read_value<float>(destination) + read_value<float>(source));
+                    } else {
+                        throw InternalError("SUM on unsupported column type");
                     }
                     continue;
                 }
