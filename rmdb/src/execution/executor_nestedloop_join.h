@@ -199,7 +199,7 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         return nullptr;
     }
 
-    bool eval_conds_raw(const char *left_data, const char *right_data) const {
+    bool eval_conds_raw(const char *left_data, const char *right_data) {
         for (const auto &cond : bound_conds_) {
             const char *lhs = resolve_operand(cond.lhs, left_data, right_data);
             const char *rhs = resolve_operand(cond.rhs, left_data, right_data);
@@ -289,7 +289,6 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
                 continue;
             }
 
-            const size_t outer_len = buffer_left_ ? right_len_ : left_len_;
             const char *outer_data = current_outer_->data;
 
             while (block_pos_ < block_count_) {

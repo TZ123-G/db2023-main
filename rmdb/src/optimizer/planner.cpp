@@ -369,7 +369,6 @@ std::shared_ptr<Plan> Planner::do_planner(std::shared_ptr<Query> query, Context 
         plannerRoot = std::make_shared<DMLPlan>(T_Update, table_scan_executors, x->tab_name, std::vector<Value>(),
                                                 query->conds, query->set_clauses);
     } else if (auto x = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse)) {
-        std::shared_ptr<plannerInfo> root = std::make_shared<plannerInfo>(x);
         std::shared_ptr<Plan> projection = generate_select_plan(std::move(query), context);
         plannerRoot = std::make_shared<DMLPlan>(T_select, projection, std::string(), std::vector<Value>(),
                                                 std::vector<Condition>(), std::vector<SetClause>());

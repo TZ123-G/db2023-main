@@ -155,19 +155,19 @@ class ProjectionPlan : public Plan {
 
 class AggregatePlan : public Plan {
    public:
-    AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<AggreExpr> aggregates)
+    AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<AggregateExpr> aggregates)
         : subplan_(std::move(subplan)), aggregates_(std::move(aggregates)) {
         Plan::tag = tag;
     }
     ~AggregatePlan() {}
 
     std::shared_ptr<Plan> subplan_;
-    std::vector<AggreExpr> aggregates_;
+    std::vector<AggregateExpr> aggregates_;
 };
 
 class SortPlan : public Plan {
    public:
-    SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<OrderBy> order_bys, bool has_limit,
+    SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<OrderByClause> order_bys, bool has_limit,
              size_t limit)
         : subplan_(std::move(subplan)),
           order_bys_(std::move(order_bys)),
@@ -178,7 +178,7 @@ class SortPlan : public Plan {
     ~SortPlan() {}
 
     std::shared_ptr<Plan> subplan_;
-    std::vector<OrderBy> order_bys_;
+    std::vector<OrderByClause> order_bys_;
     bool has_limit_;
     size_t limit_;
 };
