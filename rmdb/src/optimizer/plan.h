@@ -136,6 +136,7 @@ class DDLPlan : public Plan {
 class OtherPlan : public Plan {
    public:
     OtherPlan(PlanTag tag) { Plan::tag = tag; }
+    OtherPlan(PlanTag tag, std::string tab_name) : tab_name_(std::move(tab_name)) { Plan::tag = tag; }
     ~OtherPlan() {}
 
     std::string tab_name_;
