@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <assert.h>
 
 #include <memory>
+#include <mutex>
 
 #include "bitmap.h"
 #include "common/context.h"
@@ -50,6 +51,7 @@ class RmFileHandle {
     BufferPoolManager *buffer_pool_manager_;
     int fd_;        // 打开文件后产生的文件句柄
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
+    mutable std::mutex pages_mutex_;    // 用于保护空闲页链和位图操作的内部互斥
 
    public:
     RmFileHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)

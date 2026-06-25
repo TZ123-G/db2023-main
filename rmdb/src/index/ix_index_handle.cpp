@@ -195,6 +195,7 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
  * @return bool 返回目标键值对是否存在
  */
 bool IxIndexHandle::get_value(const char *key, std::vector<Rid> *result, Transaction *transaction) {
+    std::lock_guard<std::mutex> guard(root_latch_);
     auto [leaf, root_is_latched] = find_leaf_page(key, Operation::FIND, transaction);
     (void)root_is_latched;
     Rid *value = nullptr;
@@ -513,6 +514,7 @@ Rid IxIndexHandle::get_rid(const Iid &iid) const {
  * 可用*(int *)key转换回去
  */
 Iid IxIndexHandle::lower_bound(const char *key) {
+    std::lock_guard<std::mutex> guard(root_latch_);
     auto [leaf, root_is_latched] = find_leaf_page(key, Operation::FIND, nullptr);
     (void)root_is_latched;
     int slot = leaf->lower_bound(key);
@@ -533,6 +535,7 @@ Iid IxIndexHandle::lower_bound(const char *key) {
  * @return Iid
  */
 Iid IxIndexHandle::upper_bound(const char *key) {
+    std::lock_guard<std::mutex> guard(root_latch_);
     auto [leaf, root_is_latched] = find_leaf_page(key, Operation::FIND, nullptr);
     (void)root_is_latched;
     int slot = leaf->upper_bound(key);

@@ -69,6 +69,8 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
+        // 可串行化隔离：索引扫描开始时获取表级 IS 锁
+        context_->lock_mgr_->lock_IS_on_table(context_->txn_, fh_->GetFd());
         auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols);
         auto ih_it = sm_manager_->ihs_.find(ix_name);
         if (ih_it == sm_manager_->ihs_.end()) {

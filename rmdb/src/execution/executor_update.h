@@ -42,6 +42,13 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
+        // 可串行化隔离：升级表锁 IS → IX（已有来自扫描阶段的 IS，加 IX 后 group 变为 IX）
+        context_->lock_mgr_->lock_IX_on_table(context_->txn_, fh_->GetFd());
+        // 先一次性获取全部目标记录的 X 锁，再读取旧值、维护索引和修改记录
+        for (const auto &rid : rids_) {
+            context_->lock_mgr_->lock_exclusive_on_record(context_->txn_, rid, fh_->GetFd());
+        }
+
         auto get_ih = [this](const IndexMeta &index) -> IxIndexHandle * {
             auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
             auto ih_it = sm_manager_->ihs_.find(ix_name);

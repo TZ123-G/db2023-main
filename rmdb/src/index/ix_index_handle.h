@@ -183,7 +183,7 @@ class IxIndexHandle {
     BufferPoolManager *buffer_pool_manager_;
     int fd_;                                    // 存储B+树的文件
     IxFileHdr* file_hdr_;                       // 存了root_page，但其初始化为2（第0页存FILE_HDR_PAGE，第1页存LEAF_HEADER_PAGE）
-    std::mutex root_latch_;
+    mutable std::mutex root_latch_;   // 索引内部互斥，保护所有索引操作
 
    public:
     IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd);

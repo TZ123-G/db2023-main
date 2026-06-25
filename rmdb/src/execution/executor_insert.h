@@ -39,6 +39,8 @@ class InsertExecutor : public AbstractExecutor {
     };
 
     std::unique_ptr<RmRecord> Next() override {
+        // 可串行化隔离：INSERT 获取表级 IX 锁
+        context_->lock_mgr_->lock_IX_on_table(context_->txn_, fh_->GetFd());
         // Make record buffer
         RmRecord rec(fh_->get_file_hdr().record_size);
         for (size_t i = 0; i < values_.size(); i++) {
@@ -72,6 +74,8 @@ class InsertExecutor : public AbstractExecutor {
         }
 
         rid_ = fh_->insert_record(rec.data, context_);
+        // 可串行化隔离：获取新记录的 X 锁
+        context_->lock_mgr_->lock_exclusive_on_record(context_->txn_, rid_, fh_->GetFd());
         size_t inserted = 0;
         try {
             for (; inserted < tab_.indexes.size(); ++inserted) {

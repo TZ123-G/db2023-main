@@ -20,6 +20,11 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
     if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }
+    // 可串行化隔离：获取记录级共享锁
+    if (context != nullptr && context->txn_ != nullptr) {
+        context->lock_mgr_->lock_shared_on_record(context->txn_, rid, fd_);
+    }
+    std::lock_guard<std::mutex> lock(pages_mutex_);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
@@ -37,6 +42,7 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
  * @return {Rid} 插入的记录的记录号（位置）
  */
 Rid RmFileHandle::insert_record(char* buf, Context* context) {
+    std::lock_guard<std::mutex> lock(pages_mutex_);
     RmPageHandle page_handle = create_page_handle();
     int slot_no = Bitmap::first_bit(false, page_handle.bitmap, file_hdr_.num_records_per_page);
     if (slot_no == file_hdr_.num_records_per_page) {
@@ -64,6 +70,7 @@ Rid RmFileHandle::insert_record(char* buf, Context* context) {
  * @param {char*} buf 要插入记录的数据
  */
 void RmFileHandle::insert_record(const Rid& rid, char* buf) {
+    std::lock_guard<std::mutex> lock(pages_mutex_);
     if (rid.page_no < RM_FIRST_RECORD_PAGE || rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }
@@ -112,6 +119,7 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
  * @param {Context*} context
  */
 void RmFileHandle::delete_record(const Rid& rid, Context* context) {
+    std::lock_guard<std::mutex> lock(pages_mutex_);
     if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }
@@ -138,6 +146,7 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
  * @param {Context*} context
  */
 void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
+    std::lock_guard<std::mutex> lock(pages_mutex_);
     if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }

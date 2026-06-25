@@ -11,11 +11,12 @@ See the Mulan PSL v2 for more details. */
 #include "ix_scan.h"
 
 /**
- * @brief 
- * @todo 加上读锁（需要使用缓冲池得到page）
+ * @brief
+ * @note 持有索引内部互斥锁遍历叶子页链
  */
 void IxScan::next() {
     assert(!is_end());
+    std::lock_guard<std::mutex> lock(ih_->root_latch_);
     IxNodeHandle *node = ih_->fetch_node(iid_.page_no);
     assert(node->is_leaf_page());
     assert(iid_.slot_no < node->get_size());
@@ -31,5 +32,6 @@ void IxScan::next() {
 }
 
 Rid IxScan::rid() const {
+    std::lock_guard<std::mutex> lock(ih_->root_latch_);
     return ih_->get_rid(iid_);
 }
