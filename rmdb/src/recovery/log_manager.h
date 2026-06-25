@@ -143,7 +143,6 @@ class LogManager {
 
     lsn_t persistent_lsn() const { return persist_lsn_.load(); }
     bool initialized() const { return initialized_; }
-    void set_no_fsync(bool v) { std::lock_guard<std::mutex> guard(latch_); no_fsync_ = v; }
 
    private:
     void flush_locked(bool sync);
@@ -154,5 +153,4 @@ class LogManager {
     LogBuffer log_buffer_;
     DiskManager *disk_manager_;
     bool initialized_{false};
-    bool no_fsync_{true};
 };

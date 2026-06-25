@@ -141,7 +141,7 @@ void LogManager::flush_locked(bool sync) {
         persist_lsn_.store(log_buffer_.last_lsn_);
         log_buffer_.reset();
     }
-    if (sync && !no_fsync_) disk_manager_->sync_log();
+    if (sync) disk_manager_->sync_log();
 }
 
 void LogManager::flush_log_to_disk(bool sync) {
@@ -153,7 +153,7 @@ void LogManager::flush_log_to_disk(bool sync) {
 void LogManager::flush_up_to(lsn_t lsn) {
     if (lsn == INVALID_LSN || persist_lsn_.load() >= lsn) return;
     std::lock_guard<std::mutex> guard(latch_);
-    if (persist_lsn_.load() < lsn) flush_locked(false);
+    if (persist_lsn_.load() < lsn) flush_locked(true);
 }
 
 std::unique_ptr<LogRecord> LogManager::read_record(lsn_t lsn) {
