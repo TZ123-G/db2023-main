@@ -124,7 +124,7 @@ lsn_t LogManager::add_log_to_buffer(LogRecord *log_record) {
         throw InternalError("Single log record exceeds log buffer");
     }
     if (log_buffer_.is_full(log_record->log_tot_len_)) {
-        flush_locked(false);
+        flush_locked(true);
     }
     lsn_t lsn = next_lsn_.load();
     log_record->lsn_ = lsn;

@@ -39,7 +39,7 @@ void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t n
             if (log_manager_ != nullptr) {
                 // Index pages do not reserve on-page LSN bytes.  Flushing the
                 // current buffer is the conservative WAL fallback for them.
-                if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(false);
+                if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(true);
                 else log_manager_->flush_up_to(page->wal_lsn_);
             }
             disk_manager_->write_page(old_page_id.fd, old_page_id.page_no, page->data_, PAGE_SIZE);
@@ -125,7 +125,7 @@ bool BufferPoolManager::flush_page(PageId page_id) {
     }
     Page *page = &pages_[it->second];
     if (log_manager_ != nullptr) {
-        if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(false);
+        if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(true);
         else log_manager_->flush_up_to(page->wal_lsn_);
     }
     disk_manager_->write_page(page_id.fd, page_id.page_no, page->data_, PAGE_SIZE);
@@ -172,7 +172,7 @@ bool BufferPoolManager::delete_page(PageId page_id) {
     }
     if (page->is_dirty_) {
         if (log_manager_ != nullptr) {
-            if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(false);
+            if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(true);
             else log_manager_->flush_up_to(page->wal_lsn_);
         }
         disk_manager_->write_page(page_id.fd, page_id.page_no, page->data_, PAGE_SIZE);
@@ -201,7 +201,7 @@ void BufferPoolManager::flush_all_pages(int fd) {
         }
         Page *page = &pages_[entry.second];
         if (log_manager_ != nullptr) {
-            if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(false);
+            if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(true);
             else log_manager_->flush_up_to(page->wal_lsn_);
         }
         disk_manager_->write_page(page_id.fd, page_id.page_no, page->data_, PAGE_SIZE);
