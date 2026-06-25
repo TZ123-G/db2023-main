@@ -59,7 +59,7 @@ void QlManager::run_mutli_query(std::shared_ptr<Plan> plan, Context *context){
         try {
             switch(x->tag) {
                 case T_CreateTable:
-                    sm_manager_->create_table(x->tab_name_, x->cols_, context);
+                    sm_manager_->create_table(x->tab_name_, x->col_defs_, context);
                     break;
                 case T_DropTable:
                     sm_manager_->drop_table(x->tab_name_, context);
