@@ -141,7 +141,7 @@ void LogManager::flush_locked(bool sync) {
         persist_lsn_.store(log_buffer_.last_lsn_);
         log_buffer_.reset();
     }
-    if (sync) disk_manager_->sync_log();
+    if (sync && !no_fsync_) disk_manager_->sync_log();
 }
 
 void LogManager::flush_log_to_disk(bool sync) {
