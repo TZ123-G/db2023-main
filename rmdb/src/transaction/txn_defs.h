@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 
 #include "common/config.h"
 #include "defs.h"
@@ -45,8 +46,13 @@ class WriteRecord {
         : wtype_(wtype), tab_name_(tab_name), rid_(rid) {}
 
     // constructor for delete & update operation
-    WriteRecord(WType wtype, const std::string &tab_name, const Rid &rid, const RmRecord &record)
-        : wtype_(wtype), tab_name_(tab_name), rid_(rid), record_(record) {}
+    WriteRecord(WType wtype, const std::string &tab_name, const Rid &rid, const RmRecord &record,
+                uint64_t write_group_id = 0)
+        : wtype_(wtype),
+          tab_name_(tab_name),
+          rid_(rid),
+          record_(record),
+          write_group_id_(write_group_id) {}
 
     ~WriteRecord() = default;
 
@@ -58,11 +64,14 @@ class WriteRecord {
 
     inline std::string &GetTableName() { return tab_name_; }
 
+    inline uint64_t GetWriteGroupId() const { return write_group_id_; }
+
    private:
     WType wtype_;
     std::string tab_name_;
     Rid rid_;
     RmRecord record_;
+    uint64_t write_group_id_{0};
 };
 
 /* 多粒度锁，加锁对象的类型，包括记录和表 */

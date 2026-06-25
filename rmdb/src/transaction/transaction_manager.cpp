@@ -9,10 +9,69 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include "transaction_manager.h"
+
+#include <cstring>
+#include <vector>
+
+#include "errors.h"
 #include "record/rm_file_handle.h"
 #include "system/sm_manager.h"
 
 std::unordered_map<txn_id_t, Transaction *> TransactionManager::txn_map = {};
+
+namespace {
+
+IxIndexHandle *get_index_handle(SmManager *sm_manager, const std::string &tab_name, const IndexMeta &index) {
+    auto ix_name = sm_manager->get_ix_manager()->get_index_name(tab_name, index.cols);
+    auto ih_it = sm_manager->ihs_.find(ix_name);
+    if (ih_it == sm_manager->ihs_.end()) {
+        throw InternalError("Index " + ix_name + " not loaded for table " + tab_name);
+    }
+    return ih_it->second.get();
+}
+
+std::vector<char> build_index_key(const IndexMeta &index, const char *record_data) {
+    std::vector<char> key(index.col_tot_len);
+    int offset = 0;
+    for (const auto &col : index.cols) {
+        memcpy(key.data() + offset, record_data + col.offset, col.len);
+        offset += col.len;
+    }
+    return key;
+}
+
+void ensure_index_entry(SmManager *sm_manager, const std::string &tab_name, const IndexMeta &index,
+                        const char *record_data, const Rid &rid, Transaction *txn) {
+    auto key = build_index_key(index, record_data);
+    IxIndexHandle *ih = get_index_handle(sm_manager, tab_name, index);
+    std::vector<Rid> result;
+    if (ih->get_value(key.data(), &result, txn)) {
+        if (!result.empty() && result.front() == rid) {
+            return;
+        }
+        throw UniqueConstraintError();
+    }
+    ih->insert_entry(key.data(), rid, txn);
+}
+
+void clear_write_set(Transaction *txn) {
+    auto write_set = txn->get_write_set();
+    while (!write_set->empty()) {
+        delete write_set->back();
+        write_set->pop_back();
+    }
+}
+
+void release_locks(Transaction *txn, LockManager *lock_manager) {
+    auto lock_set = txn->get_lock_set();
+    std::vector<LockDataId> locks(lock_set->begin(), lock_set->end());
+    for (const auto &lock_data_id : locks) {
+        lock_manager->unlock(txn, lock_data_id);
+    }
+    lock_set->clear();
+}
+
+}  // namespace
 
 /**
  * @description: 事务的开始方法
@@ -38,9 +97,13 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
  * @param {LogManager*} log_manager 日志管理器指针
  */
 void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
-    if (txn == nullptr) {
+    if (txn == nullptr || txn->get_state() == TransactionState::COMMITTED ||
+        txn->get_state() == TransactionState::ABORTED) {
         return;
     }
+
+    clear_write_set(txn);
+    release_locks(txn, lock_manager_);
     txn->set_state(TransactionState::COMMITTED);
 }
 
@@ -50,8 +113,87 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
  * @param {LogManager} *log_manager 日志管理器指针
  */
 void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
-    if (txn == nullptr) {
+    if (txn == nullptr || txn->get_state() == TransactionState::COMMITTED ||
+        txn->get_state() == TransactionState::ABORTED) {
         return;
     }
+
+    auto write_set = txn->get_write_set();
+    while (!write_set->empty()) {
+        WriteRecord *write_record = write_set->back();
+        const std::string &tab_name = write_record->GetTableName();
+        const Rid &rid = write_record->GetRid();
+        TabMeta &tab = sm_manager_->db_.get_table(tab_name);
+        RmFileHandle *fh = sm_manager_->fhs_.at(tab_name).get();
+
+        if (write_record->GetWriteType() == WType::UPDATE_TUPLE) {
+            uint64_t write_group_id = write_record->GetWriteGroupId();
+            std::vector<WriteRecord *> update_group;
+            for (auto it = write_set->rbegin(); it != write_set->rend(); ++it) {
+                if ((*it)->GetWriteType() != WType::UPDATE_TUPLE ||
+                    (*it)->GetWriteGroupId() != write_group_id) {
+                    break;
+                }
+                update_group.push_back(*it);
+            }
+
+            for (WriteRecord *update_record : update_group) {
+                auto current_record = fh->get_record(update_record->GetRid(), nullptr);
+                for (const auto &index : tab.indexes) {
+                    auto key = build_index_key(index, current_record->data);
+                    get_index_handle(sm_manager_, tab_name, index)->delete_entry(key.data(), txn);
+                }
+            }
+            for (WriteRecord *update_record : update_group) {
+                RmRecord &old_record = update_record->GetRecord();
+                fh->update_record(update_record->GetRid(), old_record.data, nullptr);
+            }
+            for (WriteRecord *update_record : update_group) {
+                RmRecord &old_record = update_record->GetRecord();
+                for (const auto &index : tab.indexes) {
+                    ensure_index_entry(sm_manager_, tab_name, index, old_record.data,
+                                       update_record->GetRid(), txn);
+                }
+            }
+            for (size_t i = 0; i < update_group.size(); ++i) {
+                delete write_set->back();
+                write_set->pop_back();
+            }
+            continue;
+        }
+
+        switch (write_record->GetWriteType()) {
+            case WType::INSERT_TUPLE: {
+                auto record = fh->get_record(rid, nullptr);
+                for (const auto &index : tab.indexes) {
+                    auto key = build_index_key(index, record->data);
+                    if (!get_index_handle(sm_manager_, tab_name, index)->delete_entry(key.data(), txn)) {
+                        throw InternalError("Failed to undo inserted index entry");
+                    }
+                }
+                fh->delete_record(rid, nullptr);
+                break;
+            }
+            case WType::DELETE_TUPLE: {
+                RmRecord &old_record = write_record->GetRecord();
+                if (fh->is_record(rid)) {
+                    fh->update_record(rid, old_record.data, nullptr);
+                } else {
+                    fh->insert_record(rid, old_record.data);
+                }
+                for (const auto &index : tab.indexes) {
+                    ensure_index_entry(sm_manager_, tab_name, index, old_record.data, rid, txn);
+                }
+                break;
+            }
+            case WType::UPDATE_TUPLE:
+                break;
+        }
+
+        delete write_record;
+        write_set->pop_back();
+    }
+
+    release_locks(txn, lock_manager_);
     txn->set_state(TransactionState::ABORTED);
 }

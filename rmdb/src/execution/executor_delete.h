@@ -40,6 +40,8 @@ class DeleteExecutor : public AbstractExecutor {
     std::unique_ptr<RmRecord> Next() override {
         for (const auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
+            context_->txn_->append_write_record(
+                new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *rec));
             for (const auto &index : tab_.indexes) {
                 auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
                 auto ih_it = sm_manager_->ihs_.find(ix_name);

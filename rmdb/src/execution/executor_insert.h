@@ -88,6 +88,7 @@ class InsertExecutor : public AbstractExecutor {
             fh_->delete_record(rid_, context_);
             throw;
         }
+        context_->txn_->append_write_record(new WriteRecord(WType::INSERT_TUPLE, tab_name_, rid_));
         return nullptr;
     }
     Rid &rid() override { return rid_; }

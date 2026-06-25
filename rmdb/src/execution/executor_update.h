@@ -117,6 +117,12 @@ class UpdateExecutor : public AbstractExecutor {
             }
         }
 
+        uint64_t write_group_id = context_->txn_->next_write_group_id();
+        for (const auto &item : pending) {
+            context_->txn_->append_write_record(
+                new WriteRecord(WType::UPDATE_TUPLE, tab_name_, item.rid, *item.old_record, write_group_id));
+        }
+
         for (auto &item : pending) {
             for (size_t index_no = 0; index_no < tab_.indexes.size(); ++index_no) {
                 if (!item.changed_indexes[index_no]) {

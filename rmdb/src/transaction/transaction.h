@@ -22,7 +22,11 @@ See the Mulan PSL v2 for more details. */
 class Transaction {
    public:
     explicit Transaction(txn_id_t txn_id, IsolationLevel isolation_level = IsolationLevel::SERIALIZABLE)
-        : state_(TransactionState::DEFAULT), isolation_level_(isolation_level), txn_id_(txn_id) {
+        : txn_mode_(false),
+          state_(TransactionState::DEFAULT),
+          isolation_level_(isolation_level),
+          txn_id_(txn_id),
+          next_write_group_id_(1) {
         write_set_ = std::make_shared<std::deque<WriteRecord *>>();
         lock_set_ = std::make_shared<std::unordered_set<LockDataId>>();
         index_latch_page_set_ = std::make_shared<std::deque<Page *>>();
@@ -53,6 +57,7 @@ class Transaction {
 
     inline std::shared_ptr<std::deque<WriteRecord *>> get_write_set() { return write_set_; }  
     inline void append_write_record(WriteRecord* write_record) { write_set_->push_back(write_record); }
+    inline uint64_t next_write_group_id() { return next_write_group_id_++; }
 
     inline std::shared_ptr<std::deque<Page*>> get_index_deleted_page_set() { return index_deleted_page_set_; }
     inline void append_index_deleted_page(Page* page) { index_deleted_page_set_->push_back(page); }
@@ -70,6 +75,7 @@ class Transaction {
     lsn_t prev_lsn_;                  // 当前事务执行的最后一条操作对应的lsn，用于系统故障恢复
     txn_id_t txn_id_;                 // 事务的ID，唯一标识符
     timestamp_t start_ts_;            // 事务的开始时间戳
+    uint64_t next_write_group_id_;     // 为同一条批量写语句分配回滚分组ID
 
     std::shared_ptr<std::deque<WriteRecord *>> write_set_;  // 事务包含的所有写操作
     std::shared_ptr<std::unordered_set<LockDataId>> lock_set_;  // 事务申请的所有锁
