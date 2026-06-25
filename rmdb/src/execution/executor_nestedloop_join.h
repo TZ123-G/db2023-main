@@ -50,31 +50,37 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     std::vector<Condition> fed_conds_;
     std::vector<BoundCondition> bound_conds_;
 
-    size_t join_buffer_size_;
-    size_t right_block_capacity_;
-    std::unique_ptr<char[]> right_block_;
-    size_t right_block_count_ = 0;
-    bool right_exhausted_ = false;
+    const bool buffer_left_;
+
+    // Block buffer for whichever side is buffered (flat char array)
+    size_t block_rec_len_;
+    size_t block_capacity_;
+    std::unique_ptr<char[]> block_;
+    size_t block_count_ = 0;
+    size_t block_pos_ = 0;
+    bool block_exhausted_ = false;
+
+    // Outer-side state (the side being scanned per block)
+    std::unique_ptr<RmRecord> current_outer_;
+    bool outer_scan_had_tuple_ = false;
 
     bool is_end_ = false;
-    bool left_scan_had_tuple_ = false;
-    size_t right_block_pos_ = 0;
-    std::unique_ptr<RmRecord> current_left_;
     std::unique_ptr<RmRecord> current_tuple_;
 
    public:
     NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right,
-                           std::vector<Condition> conds, size_t join_buffer_size = DEFAULT_JOIN_BUFFER_SIZE)
+                           std::vector<Condition> conds, bool buffer_left = false,
+                           size_t join_buffer_size = DEFAULT_JOIN_BUFFER_SIZE)
         : left_(std::move(left)),
           right_(std::move(right)),
           left_len_(left_->tupleLen()),
           right_len_(right_->tupleLen()),
           len_(left_len_ + right_len_),
           fed_conds_(std::move(conds)),
-          join_buffer_size_(
-              std::min(DEFAULT_JOIN_BUFFER_SIZE,
-                       std::max(join_buffer_size, std::max<size_t>(1, right_len_)))),
-          right_block_capacity_(std::max<size_t>(1, join_buffer_size_ / std::max<size_t>(1, right_len_))) {
+          buffer_left_(buffer_left),
+          block_rec_len_(buffer_left ? left_len_ : right_len_),
+          block_capacity_(std::max<size_t>(1,
+              std::min(DEFAULT_JOIN_BUFFER_SIZE, std::max(join_buffer_size, block_rec_len_)) / block_rec_len_)) {
         cols_ = left_->cols();
         auto right_cols = right_->cols();
         for (auto &col : right_cols) {
@@ -92,30 +98,36 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     bool is_end() const override { return is_end_; }
 
-    size_t joinBufferSize() const { return join_buffer_size_; }
+    size_t joinBufferSize() const {
+        return block_capacity_ * block_rec_len_;
+    }
 
-    size_t rightBlockCapacity() const { return right_block_capacity_; }
+    size_t blockCapacity() const { return block_capacity_; }
 
-    bool isJoinBufferAllocated() const { return right_block_ != nullptr; }
+    bool isBlockAllocated() const { return block_ != nullptr; }
 
     void beginTuple() override {
-        if (right_block_ == nullptr) {
-            right_block_ = std::make_unique<char[]>(right_block_capacity_ * right_len_);
+        if (block_ == nullptr) {
+            block_ = std::make_unique<char[]>(block_capacity_ * block_rec_len_);
         }
-        right_block_count_ = 0;
-        right_block_pos_ = 0;
-        right_exhausted_ = false;
-        current_left_.reset();
-        left_scan_had_tuple_ = false;
+        block_count_ = 0;
+        block_pos_ = 0;
+        block_exhausted_ = false;
+        current_outer_.reset();
+        outer_scan_had_tuple_ = false;
         is_end_ = false;
 
-        right_->beginTuple();
-        if (!load_right_block()) {
+        // Always buffer the designated side first, then start the outer scan
+        auto &buffer_src = buffer_left_ ? left_ : right_;
+        auto &outer_src  = buffer_left_ ? right_ : left_;
+
+        buffer_src->beginTuple();
+        if (!load_block()) {
             is_end_ = true;
             return;
         }
 
-        left_->beginTuple();
+        outer_src->beginTuple();
         fetch_next_joined_tuple();
     }
 
@@ -135,6 +147,8 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     Rid &rid() override { return _abstract_rid; }
 
    private:
+    // ----- Condition binding (unchanged) -----
+
     BoundOperand bind_column(const TabCol &target) const {
         auto find_col = [&](const std::vector<ColMeta> &cols) {
             return std::find_if(cols.begin(), cols.end(), [&](const ColMeta &col) {
@@ -173,124 +187,139 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         }
     }
 
-    const char *operand_data(const BoundOperand &operand, const RmRecord *left_rec,
-                             const char *right_rec) const {
+    // ----- Evaluation (raw-data version, direction-agnostic) -----
+
+    static const char *resolve_operand(const BoundOperand &operand,
+                                        const char *left_data, const char *right_data) {
         switch (operand.side) {
-            case TupleSide::LEFT:
-                return left_rec->data + operand.offset;
-            case TupleSide::RIGHT:
-                return right_rec + operand.offset;
-            case TupleSide::VALUE:
-                return operand.value;
+            case TupleSide::LEFT:  return left_data + operand.offset;
+            case TupleSide::RIGHT: return right_data + operand.offset;
+            case TupleSide::VALUE: return operand.value;
         }
         return nullptr;
     }
 
-    bool eval_join_conditions(const RmRecord *left_rec, const char *right_rec) {
+    bool eval_conds_raw(const char *left_data, const char *right_data) const {
         for (const auto &cond : bound_conds_) {
-            const char *lhs = operand_data(cond.lhs, left_rec, right_rec);
-            const char *rhs = operand_data(cond.rhs, left_rec, right_rec);
+            const char *lhs = resolve_operand(cond.lhs, left_data, right_data);
+            const char *rhs = resolve_operand(cond.rhs, left_data, right_data);
             int cmp = compare(cond.type, cond.len, lhs, rhs);
-            bool matched = false;
             switch (cond.op) {
-                case OP_EQ:
-                    matched = cmp == 0;
-                    break;
-                case OP_NE:
-                    matched = cmp != 0;
-                    break;
-                case OP_LT:
-                    matched = cmp < 0;
-                    break;
-                case OP_GT:
-                    matched = cmp > 0;
-                    break;
-                case OP_LE:
-                    matched = cmp <= 0;
-                    break;
-                case OP_GE:
-                    matched = cmp >= 0;
-                    break;
-            }
-            if (!matched) {
-                return false;
+                case OP_EQ: if (cmp != 0) return false; break;
+                case OP_NE: if (cmp == 0) return false; break;
+                case OP_LT: if (cmp >= 0) return false; break;
+                case OP_GT: if (cmp <= 0) return false; break;
+                case OP_LE: if (cmp > 0) return false; break;
+                case OP_GE: if (cmp < 0) return false; break;
             }
         }
         return true;
     }
 
-    bool load_right_block() {
-        right_block_count_ = 0;
-        right_block_pos_ = 0;
+    // ----- Direction-agnostic block/outer helpers -----
 
-        while (!right_->is_end() && right_block_count_ < right_block_capacity_) {
-            auto rec = right_->Next();
-            if (rec != nullptr) {
-                memcpy(right_block_.get() + right_block_count_ * right_len_, rec->data, right_len_);
-                ++right_block_count_;
-            }
-            right_->nextTuple();
-        }
-        right_exhausted_ = right_->is_end();
-        return right_block_count_ > 0;
+    /** Source executor for the side being buffered into block_ */
+    std::unique_ptr<AbstractExecutor> &buffer_src() {
+        return buffer_left_ ? left_ : right_;
     }
 
-    bool load_current_left() {
-        current_left_.reset();
-        while (!left_->is_end()) {
-            auto rec = left_->Next();
+    /** Source executor for the outer (scanned-per-block) side */
+    std::unique_ptr<AbstractExecutor> &outer_src() {
+        return buffer_left_ ? right_ : left_;
+    }
+
+    bool load_block() {
+        block_count_ = 0;
+        block_pos_ = 0;
+        auto &src = buffer_src();
+        while (!src->is_end() && block_count_ < block_capacity_) {
+            auto rec = src->Next();
             if (rec != nullptr) {
-                current_left_ = std::move(rec);
-                left_scan_had_tuple_ = true;
-                right_block_pos_ = 0;
+                memcpy(block_.get() + block_count_ * block_rec_len_, rec->data, block_rec_len_);
+                ++block_count_;
+            }
+            src->nextTuple();
+        }
+        block_exhausted_ = src->is_end();
+        return block_count_ > 0;
+    }
+
+    bool load_current_outer() {
+        current_outer_.reset();
+        auto &src = outer_src();
+        while (!src->is_end()) {
+            auto rec = src->Next();
+            if (rec != nullptr) {
+                current_outer_ = std::move(rec);
+                outer_scan_had_tuple_ = true;
+                block_pos_ = 0;
                 return true;
             }
-            left_->nextTuple();
+            src->nextTuple();
         }
         return false;
     }
 
-    bool advance_to_next_right_block() {
-        if (right_exhausted_ || !load_right_block()) {
+    bool advance_to_next_block() {
+        if (block_exhausted_ || !load_block()) {
             return false;
         }
-        current_left_.reset();
-        left_scan_had_tuple_ = false;
-        left_->beginTuple();
+        current_outer_.reset();
+        outer_scan_had_tuple_ = false;
+        outer_src()->beginTuple();
         return true;
     }
 
-    void write_current_tuple(const RmRecord *left_rec, const char *right_rec) {
-        memcpy(current_tuple_->data, left_rec->data, left_len_);
-        memcpy(current_tuple_->data + left_len_, right_rec, right_len_);
+    void write_joined_tuple(const char *left_data, const char *right_data) {
+        memcpy(current_tuple_->data, left_data, left_len_);
+        memcpy(current_tuple_->data + left_len_, right_data, right_len_);
     }
 
     void fetch_next_joined_tuple() {
         while (true) {
-            if (current_left_ == nullptr && !load_current_left()) {
-                if (!left_scan_had_tuple_) {
+            if (current_outer_ == nullptr && !load_current_outer()) {
+                if (!outer_scan_had_tuple_) {
                     is_end_ = true;
                     return;
                 }
-                if (!advance_to_next_right_block()) {
+                if (!advance_to_next_block()) {
                     is_end_ = true;
                     return;
                 }
                 continue;
             }
 
-            while (right_block_pos_ < right_block_count_) {
-                const char *right_rec = right_block_.get() + right_block_pos_ * right_len_;
-                ++right_block_pos_;
-                if (eval_join_conditions(current_left_.get(), right_rec)) {
-                    write_current_tuple(current_left_.get(), right_rec);
+            const size_t outer_len = buffer_left_ ? right_len_ : left_len_;
+            const char *outer_data = current_outer_->data;
+
+            while (block_pos_ < block_count_) {
+                const char *block_rec = block_.get() + block_pos_ * block_rec_len_;
+                ++block_pos_;
+
+                bool matched;
+                if (buffer_left_) {
+                    // Block is LEFT, outer is RIGHT
+                    matched = eval_conds_raw(block_rec, outer_data);
+                } else {
+                    // Block is RIGHT, outer is LEFT
+                    matched = eval_conds_raw(outer_data, block_rec);
+                }
+
+                if (matched) {
+                    if (buffer_left_) {
+                        write_joined_tuple(block_rec, outer_data);
+                    } else {
+                        write_joined_tuple(outer_data, block_rec);
+                    }
                     return;
                 }
             }
 
-            current_left_.reset();
-            if (!left_->is_end()) {
-                left_->nextTuple();
+            // Block exhausted for current outer tuple — advance outer
+            current_outer_.reset();
+            auto &src = outer_src();
+            if (!src->is_end()) {
+                src->nextTuple();
             }
         }
     }

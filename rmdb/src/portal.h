@@ -187,7 +187,7 @@ class Portal
                     std::move(left), std::move(right), x->conds_, x->build_left_);
             }
             return std::make_unique<NestedLoopJoinExecutor>(
-                std::move(left), std::move(right), x->conds_);
+                std::move(left), std::move(right), x->conds_, x->buffer_left_);
         } else if(auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
             return std::make_unique<SortExecutor>(convert_plan_executor(x->subplan_, context), 
                                             x->order_bys_, x->has_limit_, x->limit_);

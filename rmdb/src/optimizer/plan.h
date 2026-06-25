@@ -80,13 +80,13 @@ class ScanPlan : public Plan {
 class JoinPlan : public Plan {
    public:
     JoinPlan(PlanTag tag, std::shared_ptr<Plan> left, std::shared_ptr<Plan> right, std::vector<Condition> conds,
-             bool build_left = false) {
+             bool build_left = false, bool buffer_left = false)
+        : left_(std::move(left)),
+          right_(std::move(right)),
+          conds_(std::move(conds)),
+          build_left_(build_left),
+          buffer_left_(buffer_left) {
         Plan::tag = tag;
-        left_ = std::move(left);
-        right_ = std::move(right);
-        conds_ = std::move(conds);
-        build_left_ = build_left;
-        type = INNER_JOIN;
     }
     ~JoinPlan() {}
 
@@ -94,63 +94,19 @@ class JoinPlan : public Plan {
     std::shared_ptr<Plan> right_;
     std::vector<Condition> conds_;
     bool build_left_;
-    JoinType type;
-};
-
-class ProjectionPlan : public Plan {
-   public:
-    ProjectionPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols) {
-        Plan::tag = tag;
-        subplan_ = std::move(subplan);
-        sel_cols_ = std::move(sel_cols);
-    }
-    ~ProjectionPlan() {}
-
-    std::shared_ptr<Plan> subplan_;
-    std::vector<TabCol> sel_cols_;
-};
-
-class AggregatePlan : public Plan {
-   public:
-    AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<AggregateExpr> aggregates) {
-        Plan::tag = tag;
-        subplan_ = std::move(subplan);
-        aggregates_ = std::move(aggregates);
-    }
-    ~AggregatePlan() {}
-
-    std::shared_ptr<Plan> subplan_;
-    std::vector<AggregateExpr> aggregates_;
-};
-
-class SortPlan : public Plan {
-   public:
-    SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<OrderByClause> order_bys, bool has_limit,
-             size_t limit) {
-        Plan::tag = tag;
-        subplan_ = std::move(subplan);
-        order_bys_ = std::move(order_bys);
-        has_limit_ = has_limit;
-        limit_ = limit;
-    }
-    ~SortPlan() {}
-
-    std::shared_ptr<Plan> subplan_;
-    std::vector<OrderByClause> order_bys_;
-    bool has_limit_;
-    size_t limit_;
+    bool buffer_left_;
 };
 
 class DMLPlan : public Plan {
    public:
     DMLPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::string tab_name, std::vector<Value> values,
-            std::vector<Condition> conds, std::vector<SetClause> set_clauses) {
+            std::vector<Condition> conds, std::vector<SetClause> set_clauses)
+        : subplan_(std::move(subplan)),
+          tab_name_(std::move(tab_name)),
+          values_(std::move(values)),
+          conds_(std::move(conds)),
+          set_clauses_(std::move(set_clauses)) {
         Plan::tag = tag;
-        subplan_ = std::move(subplan);
-        tab_name_ = std::move(tab_name);
-        values_ = std::move(values);
-        conds_ = std::move(conds);
-        set_clauses_ = std::move(set_clauses);
     }
     ~DMLPlan() {}
 
@@ -163,38 +119,66 @@ class DMLPlan : public Plan {
 
 class DDLPlan : public Plan {
    public:
-    DDLPlan(PlanTag tag, std::string tab_name, std::vector<std::string> col_names, std::vector<ColDef> cols) {
+    DDLPlan(PlanTag tag, std::string tab_name, std::vector<std::string> tab_col_names,
+            std::vector<ColDef> col_defs)
+        : tab_name_(std::move(tab_name)),
+          tab_col_names_(std::move(tab_col_names)),
+          col_defs_(std::move(col_defs)) {
         Plan::tag = tag;
-        tab_name_ = std::move(tab_name);
-        cols_ = std::move(cols);
-        tab_col_names_ = std::move(col_names);
     }
     ~DDLPlan() {}
 
     std::string tab_name_;
     std::vector<std::string> tab_col_names_;
-    std::vector<ColDef> cols_;
+    std::vector<ColDef> col_defs_;
 };
 
 class OtherPlan : public Plan {
    public:
-    OtherPlan(PlanTag tag, std::string tab_name) {
-        Plan::tag = tag;
-        tab_name_ = std::move(tab_name);
-    }
+    OtherPlan(PlanTag tag) { Plan::tag = tag; }
     ~OtherPlan() {}
 
     std::string tab_name_;
 };
 
-class plannerInfo {
+class ProjectionPlan : public Plan {
    public:
-    std::shared_ptr<ast::SelectStmt> parse;
-    std::vector<Condition> where_conds;
-    std::vector<TabCol> sel_cols;
-    std::shared_ptr<Plan> plan;
-    std::vector<std::shared_ptr<Plan>> table_scan_executors;
-    std::vector<SetClause> set_clauses;
+    ProjectionPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols)
+        : subplan_(std::move(subplan)), sel_cols_(std::move(sel_cols)) {
+        Plan::tag = tag;
+    }
+    ~ProjectionPlan() {}
 
-    plannerInfo(std::shared_ptr<ast::SelectStmt> parse_) : parse(std::move(parse_)) {}
+    std::shared_ptr<Plan> subplan_;
+    std::vector<TabCol> sel_cols_;
+};
+
+class AggregatePlan : public Plan {
+   public:
+    AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<AggreExpr> aggregates)
+        : subplan_(std::move(subplan)), aggregates_(std::move(aggregates)) {
+        Plan::tag = tag;
+    }
+    ~AggregatePlan() {}
+
+    std::shared_ptr<Plan> subplan_;
+    std::vector<AggreExpr> aggregates_;
+};
+
+class SortPlan : public Plan {
+   public:
+    SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<OrderBy> order_bys, bool has_limit,
+             size_t limit)
+        : subplan_(std::move(subplan)),
+          order_bys_(std::move(order_bys)),
+          has_limit_(has_limit),
+          limit_(limit) {
+        Plan::tag = tag;
+    }
+    ~SortPlan() {}
+
+    std::shared_ptr<Plan> subplan_;
+    std::vector<OrderBy> order_bys_;
+    bool has_limit_;
+    size_t limit_;
 };

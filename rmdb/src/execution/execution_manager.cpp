@@ -160,43 +160,47 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
 
     // Print records
     size_t num_rec = 0;
+    // Pre-allocate column formatting vector (reused per row to avoid reallocation)
+    std::vector<std::string> columns;
+    columns.reserve(executorTreeRoot->cols().size());
+    const auto &cols = executorTreeRoot->cols();
     // 执行query_plan
     for (executorTreeRoot->beginTuple(); !executorTreeRoot->is_end(); executorTreeRoot->nextTuple()) {
         auto Tuple = executorTreeRoot->Next();
-        std::vector<std::string> columns;
-        for (auto &col : executorTreeRoot->cols()) {
-            std::string col_str;
+        columns.clear();
+        for (const auto &col : cols) {
             char *rec_buf = Tuple->data + col.offset;
             if (col.type == TYPE_INT) {
                 int value;
                 memcpy(&value, rec_buf, sizeof(value));
-                col_str = std::to_string(value);
+                columns.push_back(std::to_string(value));
             } else if (col.type == TYPE_BIGINT) {
                 int64_t value;
                 memcpy(&value, rec_buf, sizeof(value));
-                col_str = std::to_string(value);
+                columns.push_back(std::to_string(value));
             } else if (col.type == TYPE_FLOAT) {
                 float value;
                 memcpy(&value, rec_buf, sizeof(value));
-                col_str = std::to_string(value);
+                columns.push_back(std::to_string(value));
             } else if (col.type == TYPE_STRING) {
-                col_str = std::string((char *)rec_buf, col.len);
-                col_str.resize(strlen(col_str.c_str()));
+                std::string s((char *)rec_buf, col.len);
+                s.resize(strlen(s.c_str()));
+                columns.push_back(std::move(s));
             } else if (col.type == TYPE_DATETIME) {
                 int64_t datetime_val;
                 memcpy(&datetime_val, rec_buf, sizeof(datetime_val));
-                col_str = format_datetime(datetime_val);
+                columns.push_back(format_datetime(datetime_val));
             }
-            columns.push_back(col_str);
         }
         // print record into buffer
         rec_printer.print_record(columns, context);
-        // print record into file
-        outfile << "|";
-        for(size_t i = 0; i < columns.size(); ++i) {
-            outfile << " " << columns[i] << " |";
+        // print record into file (write in one shot via stringstream)
+        std::string out_line = "|";
+        for (const auto &col_str : columns) {
+            out_line += " " + col_str + " |";
         }
-        outfile << "\n";
+        out_line += "\n";
+        outfile << out_line;
         ++num_rec;
     }
     outfile.close();

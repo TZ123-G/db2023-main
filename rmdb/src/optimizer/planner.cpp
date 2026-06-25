@@ -185,8 +185,9 @@ std::shared_ptr<Plan> Planner::make_join_plan(std::shared_ptr<Plan> left, std::s
         return (lhs_left && rhs_right) || (lhs_right && rhs_left);
     });
     bool build_left = has_hash_key && estimate_plan_rows(left) <= estimate_plan_rows(right);
+    bool buffer_left = !has_hash_key && estimate_plan_rows(left) <= estimate_plan_rows(right);
     return std::make_shared<JoinPlan>(has_hash_key ? T_HashJoin : T_NestLoop, std::move(left),
-                                      std::move(right), std::move(conds), build_left);
+                                      std::move(right), std::move(conds), build_left, buffer_left);
 }
 
 void Planner::select_hash_joins(const std::shared_ptr<Plan> &plan) {
@@ -207,6 +208,7 @@ void Planner::select_hash_joins(const std::shared_ptr<Plan> &plan) {
     });
     join->tag = has_hash_key ? T_HashJoin : T_NestLoop;
     join->build_left_ = has_hash_key && estimate_plan_rows(join->left_) <= estimate_plan_rows(join->right_);
+    join->buffer_left_ = !has_hash_key && estimate_plan_rows(join->left_) <= estimate_plan_rows(join->right_);
 }
 
 std::shared_ptr<Plan> Planner::physical_optimization(std::shared_ptr<Query> query, Context *context) {

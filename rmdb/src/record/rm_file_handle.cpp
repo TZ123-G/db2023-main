@@ -22,10 +22,8 @@ std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* cont
     if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }
-    // 可串行化隔离：获取记录级共享锁
-    if (context != nullptr && context->txn_ != nullptr) {
-        context->lock_mgr_->lock_shared_on_record(context->txn_, rid, fd_);
-    }
+    // 可串行化隔离：SeqScan已获得表级S锁，记录级S锁在此处是冗余的
+    // 移除记录级锁避免大表扫描时锁表膨胀
     std::lock_guard<std::mutex> lock(pages_mutex_);
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
