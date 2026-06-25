@@ -79,16 +79,14 @@ void release_locks(Transaction *txn, LockManager *lock_manager) {
  * @param {Transaction*} txn 事务指针，空指针代表需要创建新事务，否则开始已有事务
  * @param {LogManager*} log_manager 日志管理器指针
  */
-Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manager) {
+Transaction * TransactionManager::begin(Transaction* txn, LogManager*) {
     if (txn == nullptr) {
         txn = new Transaction(next_txn_id_++);
     }
     txn->set_state(TransactionState::GROWING);
     txn->set_start_ts(next_timestamp_++);
-    if (log_manager != nullptr) {
-        BeginLogRecord log(txn->get_transaction_id());
-        txn->set_prev_lsn(log_manager->append(log, INVALID_LSN));
-    }
+    // BEGIN is appended lazily with the first operation log.  A read-only
+    // transaction therefore acquires and releases locks without touching WAL.
 
     std::unique_lock<std::mutex> lock(latch_);
     TransactionManager::txn_map[txn->get_transaction_id()] = txn;
@@ -106,7 +104,7 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
         return;
     }
 
-    if (log_manager != nullptr) {
+    if (log_manager != nullptr && txn->get_prev_lsn() != INVALID_LSN) {
         CommitLogRecord log(txn->get_transaction_id());
         lsn_t lsn = log_manager->append(log, txn->get_prev_lsn());
         txn->set_prev_lsn(lsn);
@@ -212,7 +210,7 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
         write_set->pop_back();
     }
 
-    if (log_manager != nullptr) {
+    if (log_manager != nullptr && txn->get_prev_lsn() != INVALID_LSN) {
         sm_manager_->rollback_ddl(txn, log_manager);
         // We do not emit ARIES compensation log records.  Therefore all undo
         // effects must be on disk before ABORT can mark the transaction as

@@ -110,6 +110,13 @@ void LogManager::initialize() {
 }
 
 lsn_t LogManager::append(LogRecord &log_record, lsn_t prev_lsn) {
+    bool is_operation = log_record.log_type_ != begin &&
+                        log_record.log_type_ != commit &&
+                        log_record.log_type_ != ABORT;
+    if (prev_lsn == INVALID_LSN && is_operation) {
+        BeginLogRecord begin_record(log_record.log_tid_);
+        prev_lsn = add_log_to_buffer(&begin_record);
+    }
     log_record.prev_lsn_ = prev_lsn;
     return add_log_to_buffer(&log_record);
 }
