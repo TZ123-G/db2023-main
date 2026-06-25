@@ -214,6 +214,11 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
 
     if (log_manager != nullptr) {
         sm_manager_->rollback_ddl(txn, log_manager);
+        // We do not emit ARIES compensation log records.  Therefore all undo
+        // effects must be on disk before ABORT can mark the transaction as
+        // complete.  If a crash happens earlier, no ABORT exists and startup
+        // safely repeats the idempotent undo.
+        sm_manager_->flush_abort_state();
         AbortLogRecord log(txn->get_transaction_id());
         lsn_t lsn = log_manager->append(log, txn->get_prev_lsn());
         txn->set_prev_lsn(lsn);

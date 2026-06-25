@@ -6,6 +6,7 @@
 #include <sstream>
 
 #include "errors.h"
+#include "record/rm_manager.h"
 
 namespace {
 
@@ -80,9 +81,9 @@ void RecoveryManager::analyze() {
                 active_txns_.erase(record->log_tid_);
                 break;
             case ABORT:
-                // Runtime abort does not force every undone data page. Repeating
-                // undo after a crash is therefore required and is idempotent.
-                active_txns_[record->log_tid_] = record->lsn_;
+                // Runtime abort forces all undo effects before this record is
+                // appended, so it is a terminal transaction state.
+                active_txns_.erase(record->log_tid_);
                 break;
             default:
                 active_txns_[record->log_tid_] = record->lsn_;

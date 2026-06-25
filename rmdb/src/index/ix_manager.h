@@ -157,14 +157,21 @@ class IxManager {
     }
 
     void close_index(const IxIndexHandle *ih) {
-        // Flush pages first: BufferPoolManager enforces WAL for every dirty
-        // structural page before the file header is persisted.
+        flush_index(ih);
+        buffer_pool_manager_->discard_all_pages(ih->fd_);
+        disk_manager_->close_file(ih->fd_);
+    }
+
+    /**
+     * Persist an index without closing it.  This is used before an ABORT record
+     * becomes durable so recovery never needs to repeat a completed rollback.
+     */
+    void flush_index(const IxIndexHandle *ih) {
+        std::lock_guard<std::mutex> guard(ih->root_latch_);
         buffer_pool_manager_->flush_all_pages(ih->fd_);
         char* data = new char[ih->file_hdr_->tot_len_];
         ih->file_hdr_->serialize(data);
         disk_manager_->write_page(ih->fd_, IX_FILE_HDR_PAGE, data, ih->file_hdr_->tot_len_);
         delete[] data;
-        buffer_pool_manager_->discard_all_pages(ih->fd_);
-        disk_manager_->close_file(ih->fd_);
     }
 };

@@ -644,3 +644,13 @@ void SmManager::rollback_ddl(Transaction *txn, LogManager *log_manager) {
         lsn = record->prev_lsn_;
     }
 }
+
+void SmManager::flush_abort_state() {
+    for (const auto &entry : ihs_) {
+        ix_manager_->flush_index(entry.second.get());
+    }
+    for (const auto &entry : fhs_) {
+        rm_manager_->flush_file(entry.second.get());
+    }
+    flush_meta();
+}

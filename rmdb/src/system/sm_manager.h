@@ -100,4 +100,10 @@ class SmManager {
 
     /** Undo a prepared auto-commit DDL statement when its request aborts. */
     void rollback_ddl(Transaction *txn, LogManager *log_manager);
+
+    /**
+     * Force all data/index state after runtime undo and before the ABORT log.
+     * This substitutes for compensation log records in the current framework.
+     */
+    void flush_abort_state();
 };
