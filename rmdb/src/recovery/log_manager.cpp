@@ -124,7 +124,7 @@ lsn_t LogManager::add_log_to_buffer(LogRecord *log_record) {
         throw InternalError("Single log record exceeds log buffer");
     }
     if (log_buffer_.is_full(log_record->log_tot_len_)) {
-        flush_locked(true);
+        flush_locked(false);
     }
     lsn_t lsn = next_lsn_.load();
     log_record->lsn_ = lsn;
@@ -153,11 +153,12 @@ void LogManager::flush_log_to_disk(bool sync) {
 void LogManager::flush_up_to(lsn_t lsn) {
     if (lsn == INVALID_LSN || persist_lsn_.load() >= lsn) return;
     std::lock_guard<std::mutex> guard(latch_);
-    if (persist_lsn_.load() < lsn) flush_locked(true);
+    if (persist_lsn_.load() < lsn) flush_locked(false);
 }
 
 std::unique_ptr<LogRecord> LogManager::read_record(lsn_t lsn) {
     if (lsn < 0) return nullptr;
+    std::lock_guard<std::mutex> guard(latch_);
     char header[LOG_HEADER_SIZE];
     if (disk_manager_->read_log(header, sizeof(header), lsn) != static_cast<int>(sizeof(header))) return nullptr;
     uint32_t total;
