@@ -1,0 +1,2 @@
+add_executable(recovery_test recovery_test.cpp)
+target_link_libraries(recovery_test recovery gtest_main pthread)

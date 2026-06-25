@@ -76,6 +76,7 @@ struct TabMeta {
     TabMeta(const TabMeta &other) {
         name = other.name;
         for(auto col : other.cols) cols.push_back(col);
+        for(auto index : other.indexes) indexes.push_back(index);
     }
 
     /* 判断当前表中是否存在名为col_name的字段 */
@@ -182,6 +183,16 @@ class DbMeta {
 
         return pos->second;
     }
+
+    const TabMeta &get_table(const std::string &tab_name) const {
+        auto pos = tabs_.find(tab_name);
+        if (pos == tabs_.end()) {
+            throw TableNotFoundError(tab_name);
+        }
+        return pos->second;
+    }
+
+    const std::map<std::string, TabMeta> &tables() const { return tabs_; }
 
     // 重载操作符 <<
     friend std::ostream &operator<<(std::ostream &os, const DbMeta &db_meta) {

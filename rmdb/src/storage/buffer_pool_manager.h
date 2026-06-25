@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <unistd.h>
 
 #include <cassert>
+#include <algorithm>
 #include <list>
 #include <mutex>
 #include <unordered_map>
@@ -24,6 +25,8 @@ See the Mulan PSL v2 for more details. */
 #include "replacer/lru_replacer.h"
 #include "replacer/replacer.h"
 
+class LogManager;
+
 class BufferPoolManager {
    private:
     size_t pool_size_;      // buffer_pool中可容纳页面的个数，即帧的个数
@@ -33,6 +36,7 @@ class BufferPoolManager {
     DiskManager *disk_manager_;
     Replacer *replacer_;    // buffer_pool的置换策略，当前赛题中为LRU置换策略
     std::mutex latch_;      // 用于共享数据结构的并发控制
+    LogManager *log_manager_{nullptr};
 
    public:
     BufferPoolManager(size_t pool_size, DiskManager *disk_manager)
@@ -64,6 +68,13 @@ class BufferPoolManager {
      */
     static void mark_dirty(Page* page) { page->is_dirty_ = true; }
 
+    static void mark_dirty(Page *page, lsn_t lsn) {
+        page->is_dirty_ = true;
+        page->wal_lsn_ = std::max(page->wal_lsn_, lsn);
+    }
+
+    void set_log_manager(LogManager *log_manager) { log_manager_ = log_manager; }
+
    public: 
     Page* fetch_page(PageId page_id);
 
@@ -76,6 +87,9 @@ class BufferPoolManager {
     bool delete_page(PageId page_id);
 
     void flush_all_pages(int fd);
+
+    /** Remove all unpinned frames for a file after they have been flushed. */
+    void discard_all_pages(int fd);
 
    private:
     bool find_victim_page(frame_id_t* frame_id);

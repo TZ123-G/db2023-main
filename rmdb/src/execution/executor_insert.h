@@ -81,12 +81,16 @@ class InsertExecutor : public AbstractExecutor {
             for (; inserted < tab_.indexes.size(); ++inserted) {
                 const auto &index = tab_.indexes[inserted];
                 auto ih = get_ih(index);
+                auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+                append_index_log(context_, INDEX_INSERT, ix_name, keys[inserted], rid_);
                 ih->insert_entry(keys[inserted].data(), rid_, context_->txn_);
             }
         } catch (...) {
             for (size_t i = 0; i < inserted; ++i) {
                 const auto &index = tab_.indexes[i];
                 auto ih = get_ih(index);
+                auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+                append_index_log(context_, INDEX_DELETE, ix_name, keys[i], rid_);
                 ih->delete_entry(keys[i].data(), context_->txn_);
             }
             fh_->delete_record(rid_, context_);

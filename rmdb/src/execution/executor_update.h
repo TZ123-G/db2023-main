@@ -137,6 +137,8 @@ class UpdateExecutor : public AbstractExecutor {
                 }
                 const auto &index = tab_.indexes[index_no];
                 auto ih = get_ih(index);
+                auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+                append_index_log(context_, INDEX_DELETE, ix_name, item.old_keys[index_no], item.rid);
                 ih->delete_entry(item.old_keys[index_no].data(), context_->txn_);
             }
         }
@@ -150,6 +152,8 @@ class UpdateExecutor : public AbstractExecutor {
                 }
                 const auto &index = tab_.indexes[index_no];
                 auto ih = get_ih(index);
+                auto ix_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols);
+                append_index_log(context_, INDEX_INSERT, ix_name, item.new_keys[index_no], item.rid);
                 ih->insert_entry(item.new_keys[index_no].data(), item.rid, context_->txn_);
             }
         }

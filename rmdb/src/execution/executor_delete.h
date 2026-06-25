@@ -54,6 +54,7 @@ class DeleteExecutor : public AbstractExecutor {
                     throw InternalError("Index " + ix_name + " not loaded for table " + tab_name_);
                 }
                 auto key = build_index_key(index, rec->data);
+                append_index_log(context_, INDEX_DELETE, ix_name, key, rid);
                 if (!ih_it->second->delete_entry(key.data(), context_->txn_)) {
                     throw InternalError("Failed to delete key from index " + ix_name +
                                         ": key not found");

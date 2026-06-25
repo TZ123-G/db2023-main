@@ -16,6 +16,8 @@ See the Mulan PSL v2 for more details. */
 #include "sm_meta.h"
 #include "common/context.h"
 
+#include <mutex>
+
 class Context;
 
 struct ColDef {
@@ -35,6 +37,7 @@ class SmManager {
     BufferPoolManager* buffer_pool_manager_;
     RmManager* rm_manager_;
     IxManager* ix_manager_;
+    std::mutex schema_latch_;
 
    public:
     SmManager(DiskManager* disk_manager, BufferPoolManager* buffer_pool_manager, RmManager* rm_manager,
@@ -60,6 +63,12 @@ class SmManager {
 
     void open_db(const std::string& db_name);
 
+    /** Enter the database directory without opening table/index files. */
+    void enter_db(const std::string &db_name);
+
+    /** Load db.meta and open all files after DDL recovery has completed. */
+    void load_db();
+
     void close_db();
 
     void flush_meta();
@@ -79,4 +88,16 @@ class SmManager {
     void drop_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context);
     
     void drop_index(const std::string& tab_name, const std::vector<ColMeta>& col_names, Context* context);
+
+    /** Recreate every B+ tree from the recovered base-table records. */
+    void rebuild_indexes();
+
+    /** Persist file headers/pages changed by recovery, then reopen handles. */
+    void flush_recovery_state();
+
+    /** Remove DROP tombstones after the transaction commit record is durable. */
+    void finalize_ddl(Transaction *txn, LogManager *log_manager);
+
+    /** Undo a prepared auto-commit DDL statement when its request aborts. */
+    void rollback_ddl(Transaction *txn, LogManager *log_manager);
 };

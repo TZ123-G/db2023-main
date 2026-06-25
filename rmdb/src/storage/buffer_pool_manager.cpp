@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #include "buffer_pool_manager.h"
 
+#include "recovery/log_manager.h"
+
 /**
  * @description: 从free_list或replacer中得到可淘汰帧页的 *frame_id
  * @return {bool} true: 可替换帧查找成功 , false: 可替换帧查找失败
@@ -34,6 +36,12 @@ void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t n
     PageId old_page_id = page->id_;
     if (old_page_id.page_no != INVALID_PAGE_ID) {
         if (page->is_dirty_) {
+            if (log_manager_ != nullptr) {
+                // Index pages do not reserve on-page LSN bytes.  Flushing the
+                // current buffer is the conservative WAL fallback for them.
+                if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(true);
+                else log_manager_->flush_up_to(page->wal_lsn_);
+            }
             disk_manager_->write_page(old_page_id.fd, old_page_id.page_no, page->data_, PAGE_SIZE);
         }
         page_table_.erase(old_page_id);
@@ -43,6 +51,7 @@ void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t n
     page->id_ = new_page_id;
     page->is_dirty_ = false;
     page->pin_count_ = 0;
+    page->wal_lsn_ = INVALID_LSN;
     if (new_page_id.page_no != INVALID_PAGE_ID) {
         page_table_[new_page_id] = new_frame_id;
     }
@@ -115,6 +124,10 @@ bool BufferPoolManager::flush_page(PageId page_id) {
         return false;
     }
     Page *page = &pages_[it->second];
+    if (log_manager_ != nullptr) {
+        if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(true);
+        else log_manager_->flush_up_to(page->wal_lsn_);
+    }
     disk_manager_->write_page(page_id.fd, page_id.page_no, page->data_, PAGE_SIZE);
     page->is_dirty_ = false;
     return true;
@@ -158,6 +171,10 @@ bool BufferPoolManager::delete_page(PageId page_id) {
         return false;
     }
     if (page->is_dirty_) {
+        if (log_manager_ != nullptr) {
+            if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(true);
+            else log_manager_->flush_up_to(page->wal_lsn_);
+        }
         disk_manager_->write_page(page_id.fd, page_id.page_no, page->data_, PAGE_SIZE);
     }
     replacer_->pin(frame_id);
@@ -183,7 +200,34 @@ void BufferPoolManager::flush_all_pages(int fd) {
             continue;
         }
         Page *page = &pages_[entry.second];
+        if (log_manager_ != nullptr) {
+            if (page->wal_lsn_ == INVALID_LSN) log_manager_->flush_log_to_disk(true);
+            else log_manager_->flush_up_to(page->wal_lsn_);
+        }
         disk_manager_->write_page(page_id.fd, page_id.page_no, page->data_, PAGE_SIZE);
         page->is_dirty_ = false;
+    }
+}
+
+void BufferPoolManager::discard_all_pages(int fd) {
+    std::scoped_lock lock{latch_};
+    for (auto it = page_table_.begin(); it != page_table_.end();) {
+        if (it->first.fd != fd) {
+            ++it;
+            continue;
+        }
+        frame_id_t frame_id = it->second;
+        Page *page = &pages_[frame_id];
+        if (page->pin_count_ != 0) {
+            throw InternalError("Cannot close file with pinned buffer pages");
+        }
+        replacer_->pin(frame_id);
+        page->reset_memory();
+        page->id_ = PageId{-1, INVALID_PAGE_ID};
+        page->is_dirty_ = false;
+        page->pin_count_ = 0;
+        page->wal_lsn_ = INVALID_LSN;
+        free_list_.push_back(frame_id);
+        it = page_table_.erase(it);
     }
 }

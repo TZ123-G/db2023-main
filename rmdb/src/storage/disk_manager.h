@@ -69,6 +69,12 @@ class DiskManager {
 
     void write_log(char *log_data, int size);
 
+    void sync_log();
+
+    void truncate_log(int size);
+
+    void rename_file(const std::string &old_path, const std::string &new_path);
+
     void SetLogFd(int log_fd) { log_fd_ = log_fd; }
 
     int GetLogFd() { return log_fd_; }

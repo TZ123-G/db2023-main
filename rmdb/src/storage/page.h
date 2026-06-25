@@ -63,6 +63,10 @@ class Page {
 
     bool is_dirty() const { return is_dirty_; }
 
+    lsn_t get_wal_lsn() const { return wal_lsn_; }
+
+    void set_wal_lsn(lsn_t wal_lsn) { wal_lsn_ = wal_lsn; }
+
     static constexpr size_t OFFSET_PAGE_START = 0;
     static constexpr size_t OFFSET_LSN = 0;
     static constexpr size_t OFFSET_PAGE_HDR = 4;
@@ -87,4 +91,7 @@ class Page {
 
     /** The pin count of this page. */
     int pin_count_ = 0;
+
+    /** Highest log record that must be durable before this frame is written. */
+    lsn_t wal_lsn_ = INVALID_LSN;
 };

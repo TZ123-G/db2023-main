@@ -85,6 +85,10 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
     }
     txn->set_state(TransactionState::GROWING);
     txn->set_start_ts(next_timestamp_++);
+    if (log_manager != nullptr) {
+        BeginLogRecord log(txn->get_transaction_id());
+        txn->set_prev_lsn(log_manager->append(log, INVALID_LSN));
+    }
 
     std::unique_lock<std::mutex> lock(latch_);
     TransactionManager::txn_map[txn->get_transaction_id()] = txn;
@@ -102,6 +106,20 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
         return;
     }
 
+    if (log_manager != nullptr) {
+        CommitLogRecord log(txn->get_transaction_id());
+        lsn_t lsn = log_manager->append(log, txn->get_prev_lsn());
+        txn->set_prev_lsn(lsn);
+        // A commit is acknowledged only after its complete log record reaches
+        // stable storage.
+        log_manager->flush_log_to_disk(true);
+        try {
+            sm_manager_->finalize_ddl(txn, log_manager);
+        } catch (...) {
+            // Tombstones are recovery metadata. A cleanup failure must not
+            // turn an already durable commit into an abort.
+        }
+    }
     clear_write_set(txn);
     release_locks(txn, lock_manager_);
     txn->set_state(TransactionState::COMMITTED);
@@ -192,6 +210,14 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
 
         delete write_record;
         write_set->pop_back();
+    }
+
+    if (log_manager != nullptr) {
+        sm_manager_->rollback_ddl(txn, log_manager);
+        AbortLogRecord log(txn->get_transaction_id());
+        lsn_t lsn = log_manager->append(log, txn->get_prev_lsn());
+        txn->set_prev_lsn(lsn);
+        log_manager->flush_log_to_disk(true);
     }
 
     release_locks(txn, lock_manager_);

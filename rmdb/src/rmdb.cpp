@@ -30,6 +30,7 @@ static bool should_exit = false;
 
 // 构建全局所需的管理器对象
 auto disk_manager = std::make_unique<DiskManager>();
+auto log_manager = std::make_unique<LogManager>(disk_manager.get());
 auto buffer_pool_manager = std::make_unique<BufferPoolManager>(BUFFER_POOL_SIZE, disk_manager.get());
 auto rm_manager = std::make_unique<RmManager>(disk_manager.get(), buffer_pool_manager.get());
 auto ix_manager = std::make_unique<IxManager>(disk_manager.get(), buffer_pool_manager.get());
@@ -37,8 +38,8 @@ auto sm_manager = std::make_unique<SmManager>(disk_manager.get(), buffer_pool_ma
 auto lock_manager = std::make_unique<LockManager>();
 auto txn_manager = std::make_unique<TransactionManager>(lock_manager.get(), sm_manager.get());
 auto ql_manager = std::make_unique<QlManager>(sm_manager.get(), txn_manager.get());
-auto log_manager = std::make_unique<LogManager>(disk_manager.get());
-auto recovery = std::make_unique<RecoveryManager>(disk_manager.get(), buffer_pool_manager.get(), sm_manager.get());
+auto recovery = std::make_unique<RecoveryManager>(disk_manager.get(), buffer_pool_manager.get(),
+                                                  sm_manager.get(), log_manager.get());
 auto planner = std::make_unique<Planner>(sm_manager.get());
 auto optimizer = std::make_unique<Optimizer>(sm_manager.get(), planner.get());
 auto portal = std::make_unique<Portal>(sm_manager.get());
@@ -188,12 +189,10 @@ void *client_handler(void *sock_fd) {
         }
         cleanup_parser();
 
-        if (context.txn_->get_txn_mode() == false && !transaction_aborted) {
-            if (request_failed) {
-                txn_manager->abort(context.txn_, context.log_mgr_);
-            } else {
-                txn_manager->commit(context.txn_, context.log_mgr_);
-            }
+        if (request_failed && !transaction_aborted) {
+            txn_manager->abort(context.txn_, context.log_mgr_);
+        } else if (context.txn_->get_txn_mode() == false && !transaction_aborted) {
+            txn_manager->commit(context.txn_, context.log_mgr_);
         }
         // future TODO: 格式化 sql_handler.result, 传给客户端
         // send result with fixed format, use protobuf in the future
@@ -308,10 +307,14 @@ int main(int argc, char **argv) {
             sm_manager->create_db(db_name);
         }
         // Open database
-        sm_manager->open_db(db_name);
+        sm_manager->enter_db(db_name);
+        log_manager->initialize();
+        buffer_pool_manager->set_log_manager(log_manager.get());
 
         // recovery database
         recovery->analyze();
+        recovery->recover_ddl();
+        sm_manager->load_db();
         recovery->redo();
         recovery->undo();
         

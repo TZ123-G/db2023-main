@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #include "rm_file_handle.h"
 
+#include "recovery/log_manager.h"
+
 /**
  * @description: 获取当前表中记录号为rid的记录
  * @param {Rid&} rid 记录号，指定记录的位置
@@ -50,11 +52,19 @@ Rid RmFileHandle::insert_record(char* buf, Context* context) {
         throw InternalError("RmFileHandle::insert_record no free slot");
     }
 
+    Rid rid{page_handle.page->get_page_id().page_no, slot_no};
+    lsn_t lsn = INVALID_LSN;
+    if (context != nullptr && context->txn_ != nullptr && context->log_mgr_ != nullptr) {
+        RmRecord value(file_hdr_.record_size, buf);
+        InsertLogRecord log(context->txn_->get_transaction_id(), value, rid,
+                            disk_manager_->get_file_name(fd_));
+        lsn = context->log_mgr_->append(log, context->txn_->get_prev_lsn());
+        context->txn_->set_prev_lsn(lsn);
+        page_handle.page->set_wal_lsn(lsn);
+    }
     Bitmap::set(page_handle.bitmap, slot_no);
     memcpy(page_handle.get_slot(slot_no), buf, file_hdr_.record_size);
     page_handle.page_hdr->num_records++;
-
-    Rid rid{page_handle.page->get_page_id().page_no, slot_no};
     if (page_handle.page_hdr->num_records == file_hdr_.num_records_per_page) {
         // 当前页从“有空位”变为“满页”，必须从文件空闲页链表头部摘掉。
         file_hdr_.first_free_page_no = page_handle.page_hdr->next_free_page_no;
@@ -130,6 +140,15 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
     }
 
     bool was_full = page_handle.page_hdr->num_records == file_hdr_.num_records_per_page;
+    lsn_t lsn = INVALID_LSN;
+    if (context != nullptr && context->txn_ != nullptr && context->log_mgr_ != nullptr) {
+        RmRecord value(file_hdr_.record_size, page_handle.get_slot(rid.slot_no));
+        DeleteLogRecord log(context->txn_->get_transaction_id(), value, rid,
+                            disk_manager_->get_file_name(fd_));
+        lsn = context->log_mgr_->append(log, context->txn_->get_prev_lsn());
+        context->txn_->set_prev_lsn(lsn);
+        page_handle.page->set_wal_lsn(lsn);
+    }
     Bitmap::reset(page_handle.bitmap, rid.slot_no);
     page_handle.page_hdr->num_records--;
     if (was_full) {
@@ -154,6 +173,15 @@ void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
+    if (context != nullptr && context->txn_ != nullptr && context->log_mgr_ != nullptr) {
+        RmRecord before(file_hdr_.record_size, page_handle.get_slot(rid.slot_no));
+        RmRecord after(file_hdr_.record_size, buf);
+        UpdateLogRecord log(context->txn_->get_transaction_id(), before, after, rid,
+                            disk_manager_->get_file_name(fd_));
+        lsn_t lsn = context->log_mgr_->append(log, context->txn_->get_prev_lsn());
+        context->txn_->set_prev_lsn(lsn);
+        page_handle.page->set_wal_lsn(lsn);
     }
     memcpy(page_handle.get_slot(rid.slot_no), buf, file_hdr_.record_size);
     buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), true);

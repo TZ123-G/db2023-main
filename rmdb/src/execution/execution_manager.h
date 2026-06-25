@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <cassert>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@ class QlManager {
    private:
     SmManager *sm_manager_;
     TransactionManager *txn_mgr_;
+    std::mutex ddl_latch_;
 
    public:
     QlManager(SmManager *sm_manager, TransactionManager *txn_mgr) 

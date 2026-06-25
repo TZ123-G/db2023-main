@@ -266,9 +266,17 @@ int DiskManager::read_log(char *log_data, int size, int offset) {
 
     size = std::min(size, file_size - offset);
     if(size == 0) return 0;
-    lseek(log_fd_, offset, SEEK_SET);
-    ssize_t bytes_read = read(log_fd_, log_data, size);
-    assert(bytes_read == size);
+    if (lseek(log_fd_, offset, SEEK_SET) < 0) throw UnixError();
+    int bytes_read = 0;
+    while (bytes_read < size) {
+        ssize_t ret = read(log_fd_, log_data + bytes_read, size - bytes_read);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            throw UnixError();
+        }
+        if (ret == 0) break;
+        bytes_read += static_cast<int>(ret);
+    }
     return bytes_read;
 }
 
@@ -285,8 +293,37 @@ void DiskManager::write_log(char *log_data, int size) {
 
     // write from the file_end
     lseek(log_fd_, 0, SEEK_END);
-    ssize_t bytes_write = write(log_fd_, log_data, size);
-    if (bytes_write != size) {
-        throw UnixError();
+    int written = 0;
+    while (written < size) {
+        ssize_t ret = write(log_fd_, log_data + written, size - written);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            throw UnixError();
+        }
+        if (ret == 0) throw InternalError("DiskManager::write_log Error");
+        written += static_cast<int>(ret);
     }
+}
+
+void DiskManager::sync_log() {
+    if (log_fd_ == -1) {
+        log_fd_ = open_file(LOG_FILE_NAME);
+    }
+    if (fsync(log_fd_) < 0) throw UnixError();
+}
+
+void DiskManager::truncate_log(int size) {
+    if (size < 0) throw InternalError("Invalid log truncate size");
+    if (log_fd_ == -1) {
+        log_fd_ = open_file(LOG_FILE_NAME);
+    }
+    if (ftruncate(log_fd_, size) < 0) throw UnixError();
+    if (lseek(log_fd_, 0, SEEK_END) < 0) throw UnixError();
+}
+
+void DiskManager::rename_file(const std::string &old_path, const std::string &new_path) {
+    if (path2fd_.count(old_path) || path2fd_.count(new_path)) {
+        throw FileNotClosedError(path2fd_.count(old_path) ? old_path : new_path);
+    }
+    if (rename(old_path.c_str(), new_path.c_str()) < 0) throw UnixError();
 }

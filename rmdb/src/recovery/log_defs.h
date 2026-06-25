@@ -21,7 +21,7 @@ static constexpr std::chrono::duration<int64_t> FLUSH_TIMEOUT = std::chrono::sec
 // the offset of log_type_ in log header
 static constexpr int OFFSET_LOG_TYPE = 0;
 // the offset of lsn_ in log header
-static constexpr int OFFSET_LSN = sizeof(int);
+static constexpr int OFFSET_LSN = sizeof(int32_t);
 // the offset of log_tot_len_ in log header
 static constexpr int OFFSET_LOG_TOT_LEN = OFFSET_LSN + sizeof(lsn_t);
 // the offset of log_tid_ in log header
@@ -32,4 +32,3 @@ static constexpr int OFFSET_PREV_LSN = OFFSET_LOG_TID + sizeof(txn_id_t);
 static constexpr int OFFSET_LOG_DATA = OFFSET_PREV_LSN + sizeof(lsn_t);
 // sizeof log_header
 static constexpr int LOG_HEADER_SIZE = OFFSET_LOG_DATA;
-

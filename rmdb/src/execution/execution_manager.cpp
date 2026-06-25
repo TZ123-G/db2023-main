@@ -52,30 +52,31 @@ const char *help_info = "Supported SQL syntax:\n"
 // 主要负责执行DDL语句
 void QlManager::run_mutli_query(std::shared_ptr<Plan> plan, Context *context){
     if (auto x = std::dynamic_pointer_cast<DDLPlan>(plan)) {
-        switch(x->tag) {
-            case T_CreateTable:
-            {
-                sm_manager_->create_table(x->tab_name_, x->cols_, context);
-                break;
+        if (context->txn_ != nullptr && context->txn_->get_txn_mode()) {
+            throw InternalError("DDL statements are auto-commit and cannot run in an explicit transaction");
+        }
+        std::lock_guard<std::mutex> ddl_guard(ddl_latch_);
+        try {
+            switch(x->tag) {
+                case T_CreateTable:
+                    sm_manager_->create_table(x->tab_name_, x->cols_, context);
+                    break;
+                case T_DropTable:
+                    sm_manager_->drop_table(x->tab_name_, context);
+                    break;
+                case T_CreateIndex:
+                    sm_manager_->create_index(x->tab_name_, x->tab_col_names_, context);
+                    break;
+                case T_DropIndex:
+                    sm_manager_->drop_index(x->tab_name_, x->tab_col_names_, context);
+                    break;
+                default:
+                    throw InternalError("Unexpected field type");
             }
-            case T_DropTable:
-            {
-                sm_manager_->drop_table(x->tab_name_, context);
-                break;
-            }
-            case T_CreateIndex:
-            {
-                sm_manager_->create_index(x->tab_name_, x->tab_col_names_, context);
-                break;
-            }
-            case T_DropIndex:
-            {
-                sm_manager_->drop_index(x->tab_name_, x->tab_col_names_, context);
-                break;
-            }
-            default:
-                throw InternalError("Unexpected field type");
-                break;  
+            txn_mgr_->commit(context->txn_, context->log_mgr_);
+        } catch (...) {
+            txn_mgr_->abort(context->txn_, context->log_mgr_);
+            throw;
         }
     }
 }
