@@ -18,8 +18,15 @@ RmFileHandle *table_handle(SmManager *sm_manager, const std::string &name) {
     return it->second.get();
 }
 
+void validate_value(RmFileHandle *fh, const std::vector<char> &value) {
+    int record_size = fh->get_file_hdr().record_size;
+    if (value.size() != static_cast<size_t>(record_size)) {
+        throw InternalError("Recovery tuple image size does not match table record size");
+    }
+}
+
 void ensure_value(RmFileHandle *fh, const Rid &rid, const std::vector<char> &value) {
-    if (value.empty()) throw InternalError("Recovery log contains an empty tuple image");
+    validate_value(fh, value);
     if (fh->is_record(rid)) {
         fh->update_record(rid, const_cast<char *>(value.data()), nullptr);
     } else {
@@ -159,9 +166,12 @@ void RecoveryManager::redo_record(const LogRecord &record) {
         ensure_value(table_handle(sm_manager_, record.object_name_), record.rid_, record.after_image_);
     } else if (record.log_type_ == DELETE) {
         RmFileHandle *fh = table_handle(sm_manager_, record.object_name_);
+        validate_value(fh, record.before_image_);
         if (fh->is_record(record.rid_)) fh->delete_record(record.rid_, nullptr);
     } else if (record.log_type_ == UPDATE) {
-        ensure_value(table_handle(sm_manager_, record.object_name_), record.rid_, record.after_image_);
+        RmFileHandle *fh = table_handle(sm_manager_, record.object_name_);
+        validate_value(fh, record.before_image_);
+        ensure_value(fh, record.rid_, record.after_image_);
     }
     // Index records are intentionally not replayed into a possibly half-split
     // B+ tree.  All indexes are rebuilt from recovered base tables below.
@@ -178,11 +188,14 @@ void RecoveryManager::redo() {
 void RecoveryManager::undo_record(const LogRecord &record) {
     if (record.log_type_ == INSERT) {
         RmFileHandle *fh = table_handle(sm_manager_, record.object_name_);
+        validate_value(fh, record.after_image_);
         if (fh->is_record(record.rid_)) fh->delete_record(record.rid_, nullptr);
     } else if (record.log_type_ == DELETE) {
         ensure_value(table_handle(sm_manager_, record.object_name_), record.rid_, record.before_image_);
     } else if (record.log_type_ == UPDATE) {
-        ensure_value(table_handle(sm_manager_, record.object_name_), record.rid_, record.before_image_);
+        RmFileHandle *fh = table_handle(sm_manager_, record.object_name_);
+        validate_value(fh, record.after_image_);
+        ensure_value(fh, record.rid_, record.before_image_);
     }
 }
 

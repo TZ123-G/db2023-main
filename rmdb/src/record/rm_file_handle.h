@@ -69,9 +69,13 @@ class RmFileHandle {
 
     /* 判断指定位置上是否已经存在一条记录，通过Bitmap来判断 */
     bool is_record(const Rid &rid) const {
+        std::lock_guard<std::mutex> lock(pages_mutex_);
+        if (rid.page_no < RM_FIRST_RECORD_PAGE || rid.page_no >= file_hdr_.num_pages ||
+            rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+            return false;
+        }
         RmPageHandle page_handle = fetch_page_handle(rid.page_no);
-        bool exists = rid.slot_no >= 0 && rid.slot_no < file_hdr_.num_records_per_page &&
-                      Bitmap::is_set(page_handle.bitmap, rid.slot_no);
+        bool exists = Bitmap::is_set(page_handle.bitmap, rid.slot_no);
         buffer_pool_manager_->unpin_page(PageId{fd_, rid.page_no}, false);
         return exists;  // page的slot_no位置上是否有record
     }
