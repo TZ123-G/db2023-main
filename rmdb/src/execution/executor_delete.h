@@ -38,7 +38,7 @@ class DeleteExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        // 可串行化隔离：升级表锁 IS → IX，获取目标记录的 X 锁
+        // 可串行化隔离：扫描阶段的 S 锁与 IX 合并为 SIX，再获取目标记录的 X 锁
         context_->lock_mgr_->lock_IX_on_table(context_->txn_, fh_->GetFd());
         for (const auto &rid : rids_) {
             context_->lock_mgr_->lock_exclusive_on_record(context_->txn_, rid, fh_->GetFd());

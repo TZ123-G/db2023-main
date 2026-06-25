@@ -53,8 +53,8 @@ class SeqScanExecutor : public AbstractExecutor {
     bool is_end() const override { return scan_ == nullptr || scan_->is_end(); }
 
     void beginTuple() override {
-        // 可串行化隔离：扫描开始时获取表级 IS 锁
-        context_->lock_mgr_->lock_IS_on_table(context_->txn_, fh_->GetFd());
+        // 可串行化隔离：表级 S 锁覆盖扫描谓词，防止并发插入产生幻读
+        context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
         scan_ = std::make_unique<RmScan>(fh_);
         current_record_.reset();
         skip_unmatched();
