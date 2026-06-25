@@ -1,6 +1,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <limits.h>
 #include <memory>
 #include <stdexcept>
@@ -50,7 +51,7 @@ class ScopedTempDir {
 
 class RecoveryTestEnv {
    public:
-    RecoveryTestEnv()
+    explicit RecoveryTestEnv(const std::string &output_before_load = "")
         : bpm_(16, &disk_manager_),
           rm_manager_(&disk_manager_, &bpm_),
           ix_manager_(&disk_manager_, &bpm_),
@@ -66,6 +67,10 @@ class RecoveryTestEnv {
         std::ofstream meta(DB_META_NAME);
         meta << "recovery_test\n1\n" << tab << '\n';
         meta.close();
+        if (!output_before_load.empty()) {
+            std::ofstream output("output.txt", std::ios::out | std::ios::trunc);
+            output << output_before_load;
+        }
 
         log_manager_.initialize();
         bpm_.set_log_manager(&log_manager_);
@@ -113,6 +118,17 @@ class RecoveryTestEnv {
 
     std::vector<std::unique_ptr<LogRecord>> read_all_valid_logs() {
         return log_manager_.read_all_valid(true);
+    }
+
+    void append_output(const std::string &text) {
+        std::ofstream output("output.txt", std::ios::out | std::ios::app);
+        output << text;
+    }
+
+    std::string read_output() {
+        std::ifstream input("output.txt");
+        return std::string(std::istreambuf_iterator<char>(input),
+                           std::istreambuf_iterator<char>());
     }
 
     void create_id_index() {
@@ -169,6 +185,31 @@ TEST(RecoveryLogTest, RoundTripsUpdateImagesAndChain) {
     ASSERT_EQ(decoded->after_image_.size(), sizeof(int));
     EXPECT_EQ(memcmp(decoded->before_image_.data(), before.data, sizeof(int)), 0);
     EXPECT_EQ(memcmp(decoded->after_image_.data(), after.data, sizeof(int)), 0);
+}
+
+TEST(SystemOutputTest, CreateDatabaseInitializesEmptyOutputFile) {
+    ScopedTempDir temp_dir;
+    DiskManager disk_manager;
+    BufferPoolManager bpm(4, &disk_manager);
+    RmManager rm_manager(&disk_manager, &bpm);
+    IxManager ix_manager(&disk_manager, &bpm);
+    SmManager sm_manager(&disk_manager, &bpm, &rm_manager, &ix_manager);
+
+    sm_manager.create_db("fresh_db");
+
+    std::ifstream output("fresh_db/output.txt", std::ios::binary | std::ios::ate);
+    ASSERT_TRUE(output.is_open());
+    EXPECT_EQ(output.tellg(), 0);
+    output.close();
+    sm_manager.drop_db("fresh_db");
+}
+
+TEST(SystemOutputTest, RecoveryLoadPreservesAndAppendsOutput) {
+    RecoveryTestEnv env("before crash\n");
+
+    EXPECT_EQ(env.read_output(), "before crash\n");
+    env.append_output("after recovery\n");
+    EXPECT_EQ(env.read_output(), "before crash\nafter recovery\n");
 }
 
 TEST(RecoveryLogTest, RejectsIncompleteTail) {

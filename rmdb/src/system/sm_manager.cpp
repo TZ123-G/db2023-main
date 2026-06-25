@@ -92,6 +92,12 @@ void SmManager::create_db(const std::string& db_name) {
     // 创建日志文件
     disk_manager_->create_file(LOG_FILE_NAME);
 
+    // output.txt belongs to the lifetime of a database test run.  Initialize
+    // it once when the database is created; recovery restarts must preserve
+    // output produced before the crash.
+    std::ofstream output("output.txt", std::ios::out | std::ios::trunc);
+    output.close();
+
     // 回到根目录
     if (chdir("..") < 0) {
         throw UnixError();
@@ -152,7 +158,9 @@ void SmManager::load_db() {
         }
     }
 
-    std::ofstream outfile("output.txt", std::ios::out | std::ios::trunc);
+    // Opening an existing database may be a crash-recovery restart.  Keep all
+    // output already produced in this database directory.
+    std::ofstream outfile("output.txt", std::ios::out | std::ios::app);
     outfile.close();
 }
 
